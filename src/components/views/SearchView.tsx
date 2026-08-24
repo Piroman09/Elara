@@ -40,7 +40,7 @@ export const SearchView: React.FC = () => {
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full ${isApiOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
             <span className="text-[11px] font-mono text-zinc-400">
-              {isApiOnline ? 'YouTube Music Online' : 'Local Archive'}
+              {isApiOnline ? 'ELARA Soundstream' : 'Offline Archive'}
             </span>
           </div>
         </div>
@@ -91,7 +91,7 @@ export const SearchView: React.FC = () => {
                 {isSearchingLive && (
                   <span className="text-xs font-mono text-emerald-400 flex items-center gap-1.5">
                     <Radio className="w-3.5 h-3.5 animate-pulse" />
-                    Querying YouTube Music...
+                    Searching Global Stream...
                   </span>
                 )}
               </div>
@@ -111,14 +111,14 @@ export const SearchView: React.FC = () => {
         </div>
       ) : (
         <div className="space-y-8">
-          {/* YouTube Music Explore Playlists */}
+          {/* ELARA Featured Playlists */}
           {explorePlaylists.length > 0 && (
             <section className="space-y-3">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-xl font-extrabold text-white tracking-tight flex items-center gap-2">
                     <ListMusic className="w-5 h-5 text-emerald-400" />
-                    Trending YouTube Music Playlists
+                    Trending Featured Playlists
                   </h2>
                   <p className="text-xs text-zinc-400">Popular community and curated collections</p>
                 </div>

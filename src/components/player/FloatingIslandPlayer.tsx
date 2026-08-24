@@ -37,6 +37,7 @@ export const FloatingIslandPlayer: React.FC = () => {
   const likedTrackIds = useMusicStore(state => state.likedTrackIds);
   const isLyricsOpen = useMusicStore(state => state.isLyricsOpen);
   const visualizerMode = useMusicStore(state => state.visualizerMode);
+  const activePlaybackSource = useMusicStore(state => state.activePlaybackSource);
 
   const togglePlay = useMusicStore(state => state.togglePlay);
   const nextTrack = useMusicStore(state => state.nextTrack);
@@ -127,9 +128,14 @@ export const FloatingIslandPlayer: React.FC = () => {
                 </span>
                 <span 
                   onClick={() => currentTrack.artistId && setActiveView('artist', { artistId: currentTrack.artistId })}
-                  className="text-[11px] text-zinc-400 hover:text-zinc-200 cursor-pointer truncate transition-colors"
+                  className="text-[11px] text-zinc-400 hover:text-zinc-200 cursor-pointer truncate transition-colors flex items-center gap-1.5"
                 >
-                  {currentTrack.artist}
+                  <span className="truncate">{currentTrack.artist}</span>
+                  {activePlaybackSource === 'offline-mp4' && (
+                    <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-mono font-bold flex-shrink-0 border border-emerald-500/30">
+                      MP4
+                    </span>
+                  )}
                 </span>
               </div>
 

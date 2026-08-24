@@ -1,5 +1,6 @@
 import os
 import re
+import random
 from typing import Optional, List
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +9,7 @@ from ytmusicapi import YTMusic
 import yt_dlp
 import requests
 
-app = FastAPI(title="AuraSonic YTMusic API Engine")
+app = FastAPI(title="ELARA YTMusic API Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,7 +54,7 @@ ACCENT_PALETTE = ['#00ff87', '#60efff', '#ec4899', '#8b5cf6', '#06b6d4', '#f59e0
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "service": "AuraSonic YTMusic Engine"}
+    return {"status": "ok", "service": "ELARA YTMusic Engine"}
 
 @app.get("/api/search")
 def search_music(
@@ -61,7 +62,8 @@ def search_music(
     filter_type: Optional[str] = Query(None, alias="filter")
 ):
     try:
-        filter_param = None
+        # Default to 'songs' filter for best results with full metadata
+        filter_param = 'songs'
         if filter_type in ['songs', 'artists', 'albums', 'playlists', 'community_playlists']:
             filter_param = filter_type
 
@@ -71,6 +73,7 @@ def search_music(
         for idx, item in enumerate(results):
             result_type = item.get('resultType', filter_type or 'song')
             
+            # Only include playable song/video results
             if result_type in ['song', 'video']:
                 video_id = item.get('videoId')
                 if not video_id:
@@ -98,8 +101,8 @@ def search_music(
                     "albumArt": get_best_thumbnail(item.get('thumbnails', [])),
                     "audioUrl": f"http://localhost:8000/api/stream/{video_id}",
                     "duration": duration_sec,
-                    "genre": "YouTube Music",
-                    "mood": "Global Stream",
+                    "genre": "Global Stream",
+                    "mood": "ELARA Stream",
                     "accentColor": accent,
                     "vibeCoords": {
                         "x": 15 + ((idx * 27) % 70),
@@ -109,29 +112,57 @@ def search_music(
                     "plays": item.get('views') or 1000000
                 })
 
-            elif result_type in ['album', 'playlist']:
-                normalized.append({
-                    "type": result_type,
-                    "id": item.get('browseId', f"item-{idx}"),
-                    "title": item.get('title', ''),
-                    "artist": item.get('artists', [{}])[0].get('name', '') if item.get('artists') else 'YouTube Music',
-                    "image": get_best_thumbnail(item.get('thumbnails', [])),
-                    "itemCount": item.get('itemCount', '')
-                })
-
         return {"query": q, "results": normalized}
     except Exception as e:
         print(f"Search error: {e}")
         return {"query": q, "results": [], "error": str(e)}
 
+TRENDING_SEEDS = [
+    "Top Hits 2026",
+    "Billboard Hot 100 Hits",
+    "Global Viral Music",
+    "Top Trending Pop Hits",
+    "Global Electronic Dance",
+    "Viral Hip Hop Hits",
+    "Trending Melodic Chill"
+]
+
 @app.get("/api/charts")
-def get_charts():
+def get_charts(randomize: bool = Query(True)):
     try:
-        charts = ytm.get_charts(country="US")
-        songs = charts.get('videos', {}).get('items', []) or charts.get('songs', {}).get('items', [])
-        
+        candidate_songs = []
+
+        # 1. Fetch official global & US charts
+        try:
+            charts = ytm.get_charts(country="US")
+            songs = charts.get('videos', {}).get('items', []) or charts.get('songs', {}).get('items', [])
+            candidate_songs.extend(songs)
+        except Exception:
+            pass
+
+        # 2. Fetch from a random trending query seed for variety
+        try:
+            random_seed = random.choice(TRENDING_SEEDS)
+            search_items = ytm.search(random_seed, filter="songs", limit=20)
+            candidate_songs.extend(search_items)
+        except Exception:
+            pass
+
+        # 3. Deduplicate by videoId
+        seen_ids = set()
+        unique_songs = []
+        for s in candidate_songs:
+            vid = s.get('videoId')
+            if vid and vid not in seen_ids:
+                seen_ids.add(vid)
+                unique_songs.append(s)
+
+        # 4. Shuffle for dynamic celestial orbit
+        if randomize:
+            random.shuffle(unique_songs)
+
         normalized_songs = []
-        for idx, item in enumerate(songs[:24]):
+        for idx, item in enumerate(unique_songs[:28]):
             video_id = item.get('videoId')
             if not video_id:
                 continue
@@ -140,24 +171,39 @@ def get_charts():
             artist_name = ", ".join([a.get('name', '') for a in artists if a.get('name')]) or 'Trending Artist'
             accent = ACCENT_PALETTE[idx % len(ACCENT_PALETTE)]
 
+            # Generate aesthetic non-overlapping galaxy coordinates across 4 quadrants
+            quadrant = idx % 4
+            if quadrant == 0:  # Top Left
+                cx = random.uniform(10, 44)
+                cy = random.uniform(12, 44)
+            elif quadrant == 1:  # Top Right
+                cx = random.uniform(54, 88)
+                cy = random.uniform(12, 44)
+            elif quadrant == 2:  # Bottom Left
+                cx = random.uniform(10, 44)
+                cy = random.uniform(54, 86)
+            else:  # Bottom Right
+                cx = random.uniform(54, 88)
+                cy = random.uniform(54, 86)
+
             normalized_songs.append({
                 "id": f"yt-{video_id}",
                 "videoId": video_id,
                 "title": item.get('title', 'Trending Hit'),
                 "artist": artist_name,
-                "album": "YouTube Trending Hits",
+                "album": "ELARA Cosmic Hits",
                 "albumArt": get_best_thumbnail(item.get('thumbnails', [])),
                 "audioUrl": f"http://localhost:8000/api/stream/{video_id}",
                 "duration": parse_duration_to_seconds(item.get('duration', '3:30')),
-                "genre": "Trending Hits",
-                "mood": "Global Top",
+                "genre": "Global Hit",
+                "mood": "Celestial Vibe",
                 "accentColor": accent,
                 "vibeCoords": {
-                    "x": 12 + ((idx * 23) % 76),
-                    "y": 15 + ((idx * 29) % 70)
+                    "x": round(cx, 1),
+                    "y": round(cy, 1)
                 },
-                "energy": 60 + ((idx * 13) % 38),
-                "plays": 2500000
+                "energy": random.randint(55, 98),
+                "plays": random.randint(1500000, 9500000)
             })
 
         return {"trending": normalized_songs}
@@ -180,11 +226,11 @@ def get_explore_playlists():
             playlists.append({
                 "id": browse_id,
                 "name": item.get('title', 'Featured Playlist'),
-                "description": f"Curated by {item.get('author', 'YouTube Music')} • {item.get('itemCount', '')} songs",
+                "description": f"Curated by {item.get('author', 'ELARA')} • {item.get('itemCount', '')} songs",
                 "coverArt": get_best_thumbnail(item.get('thumbnails', [])),
                 "tracks": [],
                 "color": ACCENT_PALETTE[idx % len(ACCENT_PALETTE)],
-                "createdBy": item.get('author', 'YouTube Music')
+                "createdBy": item.get('author', 'ELARA Curated')
             })
         return {"playlists": playlists}
     except Exception as e:
@@ -194,7 +240,7 @@ def get_explore_playlists():
 @app.get("/api/playlist/{playlist_id}")
 def get_playlist_tracks(playlist_id: str):
     """
-    Fetches full track list for any YouTube Music playlist.
+    Fetches full track list for a playlist.
     """
     try:
         data = ytm.get_playlist(playlist_id, limit=50)
@@ -220,18 +266,18 @@ def get_playlist_tracks(playlist_id: str):
                 "albumArt": get_best_thumbnail(item.get('thumbnails', [])),
                 "audioUrl": f"http://localhost:8000/api/stream/{video_id}",
                 "duration": parse_duration_to_seconds(item.get('duration', '3:30')),
-                "genre": "YouTube Playlist",
+                "genre": "Curated Playlist",
                 "accentColor": accent,
                 "addedAt": "Today"
             })
 
         return {
             "id": playlist_id,
-            "name": data.get('title', 'YouTube Playlist'),
-            "description": data.get('description', 'Curated YouTube Music Playlist'),
+            "name": data.get('title', 'Featured Playlist'),
+            "description": data.get('description', 'Curated Playlist Collection'),
             "coverArt": get_best_thumbnail(data.get('thumbnails', [])),
             "tracks": normalized_tracks,
-            "createdBy": data.get('author', {}).get('name', 'YouTube Music') if isinstance(data.get('author'), dict) else 'YouTube Music'
+            "createdBy": data.get('author', {}).get('name', 'ELARA Curated') if isinstance(data.get('author'), dict) else 'ELARA Curated'
         }
     except Exception as e:
         print(f"Get playlist error: {e}")
@@ -308,6 +354,80 @@ def get_track_lyrics(video_id: str):
     except Exception as e:
         print(f"Lyrics error: {e}")
         return {"lyrics": [], "text": None}
+
+@app.get("/api/download/{video_id}")
+def download_track(video_id: str):
+    """
+    Returns a downloadable MP4 stream for a given YouTube video_id.
+    Uses yt-dlp to extract the best mp4 format with video+audio merged.
+    """
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        dl_opts = {
+            'format': 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+        }
+        with yt_dlp.YoutubeDL(dl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+            download_url = None
+            title = info.get('title', video_id)
+
+            if 'url' in info:
+                download_url = info['url']
+            elif 'formats' in info:
+                # Prefer mp4 formats with both video and audio
+                mp4_formats = [
+                    f for f in info['formats']
+                    if f.get('ext') == 'mp4'
+                    and f.get('acodec') != 'none'
+                    and f.get('vcodec') != 'none'
+                ]
+                if mp4_formats:
+                    # Pick the highest quality mp4
+                    mp4_formats.sort(key=lambda f: f.get('height', 0) or 0, reverse=True)
+                    download_url = mp4_formats[0].get('url')
+                else:
+                    # Fallback: any format with both streams
+                    combined = [
+                        f for f in info['formats']
+                        if f.get('acodec') != 'none' and f.get('vcodec') != 'none'
+                    ]
+                    if combined:
+                        download_url = combined[-1].get('url')
+                    elif info['formats']:
+                        download_url = info['formats'][-1].get('url')
+
+            if not download_url:
+                raise HTTPException(status_code=404, detail="No downloadable MP4 format found")
+
+            # Sanitize filename
+            safe_title = re.sub(r'[^\w\s\-]', '', title).strip()[:80]
+            filename = f"{safe_title}.mp4"
+
+            upstream_res = requests.get(download_url, stream=True, timeout=15)
+
+            response_headers = {
+                "Content-Type": "video/mp4",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Allow-Origin": "*",
+            }
+            if "Content-Length" in upstream_res.headers:
+                response_headers["Content-Length"] = upstream_res.headers["Content-Length"]
+
+            return StreamingResponse(
+                upstream_res.iter_content(chunk_size=128 * 1024),
+                status_code=200,
+                headers=response_headers,
+                media_type="video/mp4"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Download error for {video_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

@@ -6,31 +6,69 @@ import {
   ViewType, 
   AuraTheme 
 } from '../types/music';
-import { MOCK_TRACKS, MOCK_PLAYLISTS, EQ_PRESETS } from '../data/mockTracks';
+import { MOCK_TRACKS, EQ_PRESETS } from '../data/mockTracks';
 import { audioEngine } from '../services/audioEngine';
 import { YTMusicService } from '../services/ytmusicService';
+import { offlineStorage } from '../services/offlineStorageService';
+import { AppUser, AuthService, supabase } from '../services/supabaseService';
 import confetti from 'canvas-confetti';
+
+const STORAGE_KEY_USER = 'elara_user_session_v1';
 
 const STORAGE_KEY_LIKED_TRACKS = 'aurasonic_liked_tracks_v2';
 const STORAGE_KEY_PLAYLISTS = 'aurasonic_custom_playlists_v2';
 const STORAGE_KEY_THEME = 'aurasonic_theme_v2';
+const STORAGE_KEY_DOWNLOADS = 'aurasonic_downloads_v2';
 
-function getStoredLikedTracks(): Track[] {
+function getStoredUser(): AppUser | null {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY_LIKED_TRACKS);
-    return saved ? JSON.parse(saved) : [MOCK_TRACKS[0], MOCK_TRACKS[2]];
+    const saved = localStorage.getItem(STORAGE_KEY_USER);
+    return saved ? JSON.parse(saved) : null;
   } catch {
-    return [MOCK_TRACKS[0], MOCK_TRACKS[2]];
+    return null;
   }
 }
 
-function getStoredPlaylists(): Playlist[] {
+function getPlaylistKey(user: AppUser | null): string {
+  return user ? `elara_user_playlists_${user.id}` : STORAGE_KEY_PLAYLISTS;
+}
+
+function getLikedKey(user: AppUser | null): string {
+  return user ? `elara_user_liked_${user.id}` : STORAGE_KEY_LIKED_TRACKS;
+}
+
+function getStoredLikedTracks(user: AppUser | null = getStoredUser()): Track[] {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY_PLAYLISTS);
-    return saved ? JSON.parse(saved) : MOCK_PLAYLISTS;
+    const key = getLikedKey(user);
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : [];
   } catch {
-    return MOCK_PLAYLISTS;
+    return [];
   }
+}
+
+function getStoredPlaylists(user: AppUser | null = getStoredUser()): Playlist[] {
+  try {
+    const key = getPlaylistKey(user);
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUserPlaylists(playlists: Playlist[], user: AppUser | null) {
+  try {
+    const key = getPlaylistKey(user);
+    localStorage.setItem(key, JSON.stringify(playlists));
+  } catch {}
+}
+
+function saveUserLikedTracks(likedTracks: Track[], user: AppUser | null) {
+  try {
+    const key = getLikedKey(user);
+    localStorage.setItem(key, JSON.stringify(likedTracks));
+  } catch {}
 }
 
 function getStoredTheme(): AuraTheme {
@@ -39,6 +77,21 @@ function getStoredTheme(): AuraTheme {
     return saved || 'cyber-neon';
   } catch {
     return 'cyber-neon';
+  }
+}
+
+export interface DownloadedTrack {
+  track: Track;
+  downloadedAt: string;
+  status: 'downloading' | 'completed' | 'failed';
+}
+
+function getStoredDownloads(): DownloadedTrack[] {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_DOWNLOADS);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
   }
 }
 
@@ -70,6 +123,14 @@ interface MusicStoreState {
   likedTrackIds: string[];
   visualizerMode: VisualizerMode;
   currentTheme: AuraTheme;
+  downloadedTracks: DownloadedTrack[];
+  activePlaybackSource: 'network' | 'offline-mp4' | 'local';
+  isOfflineOnly: boolean;
+  isRefreshingGalaxy: boolean;
+
+  // Auth User
+  user: AppUser | null;
+  isAuthModalOpen: boolean;
 
   // Modals & Drawers
   isFullscreen: boolean;
@@ -116,11 +177,17 @@ interface MusicStoreState {
   setIsEqualizerOpen: (open: boolean) => void;
   setIsCreatePlaylistOpen: (open: boolean) => void;
   setIsUploadTrackOpen: (open: boolean) => void;
+  setIsAuthModalOpen: (open: boolean) => void;
+
+  // Auth Actions
+  setUser: (user: AppUser | null) => void;
+  logoutUser: () => Promise<void>;
 
   // Playlist Management
   createPlaylist: (name: string, description?: string, coverArt?: string) => Playlist;
   addTrackToPlaylist: (playlistId: string, track: Track) => void;
   removeTrackFromPlaylist: (playlistId: string, trackId: string) => void;
+  clearPlaylistTracks: (playlistId: string) => void;
   deletePlaylist: (playlistId: string) => void;
 
   setVisualizerMode: (mode: VisualizerMode) => void;
@@ -129,6 +196,15 @@ interface MusicStoreState {
   toggleBassBoost: () => void;
   setSleepTimer: (minutes: number | null) => void;
   importLocalTrack: (track: Track) => void;
+
+  // Downloads & Offline Playback
+  downloadTrack: (track: Track) => Promise<void>;
+  removeDownload: (trackId: string) => Promise<void>;
+  clearDownloads: () => Promise<void>;
+  importDownloadedMP4: (file: File) => Promise<void>;
+
+  // Celestial Orbit / Vibe Galaxy
+  refreshGalaxyTracks: () => Promise<void>;
 }
 
 let sleepTimerInterval: any = null;
@@ -164,6 +240,12 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
   likedTrackIds: initialLiked.map(t => t.id),
   visualizerMode: 'halo',
   currentTheme: getStoredTheme(),
+  downloadedTracks: getStoredDownloads(),
+  activePlaybackSource: 'network',
+  isOfflineOnly: typeof navigator !== 'undefined' ? !navigator.onLine : false,
+  isRefreshingGalaxy: false,
+  user: getStoredUser(),
+  isAuthModalOpen: false,
 
   isFullscreen: false,
   isLyricsOpen: false,
@@ -172,6 +254,47 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
   isCreatePlaylistOpen: false,
   isUploadTrackOpen: false,
 
+  setUser: (user: AppUser | null) => {
+    try {
+      if (user) {
+        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
+      } else {
+        localStorage.removeItem(STORAGE_KEY_USER);
+      }
+    } catch {}
+
+    // Load user's saved playlists & liked songs upon login
+    const userPlaylists = getStoredPlaylists(user);
+    const userLiked = getStoredLikedTracks(user);
+
+    set({ 
+      user,
+      playlists: userPlaylists,
+      likedTracks: userLiked,
+      likedTrackIds: userLiked.map(t => t.id)
+    });
+  },
+
+  setIsAuthModalOpen: (open: boolean) => set({ isAuthModalOpen: open }),
+
+  logoutUser: async () => {
+    await AuthService.signOut();
+    try {
+      localStorage.removeItem(STORAGE_KEY_USER);
+    } catch {}
+
+    // Reset everything back to default empty state (zero playlists & zero liked tracks)
+    set({ 
+      user: null,
+      playlists: [],
+      likedTracks: [],
+      likedTrackIds: [],
+      selectedPlaylistId: null,
+      selectedPlaylistData: null,
+      activeView: 'galaxy'
+    });
+  },
+
   selectedEQPresetId: 'flat',
   customEQGains: [0, 0, 0, 0, 0],
   bassBoostEnabled: false,
@@ -179,6 +302,36 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
   sleepTimerTotalMinutes: null,
 
   init: () => {
+    // Sync Supabase Auth session if configured
+    if (supabase) {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user) {
+          const formatted = AuthService.formatSupabaseUser(session.user);
+          get().setUser(formatted);
+        }
+      });
+
+      supabase.auth.onAuthStateChange((_event, session) => {
+        if (session?.user) {
+          const formatted = AuthService.formatSupabaseUser(session.user);
+          get().setUser(formatted);
+        } else if (_event === 'SIGNED_OUT') {
+          get().setUser(null);
+        }
+      });
+    }
+
+    // Online / Offline network status listeners
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        set({ isOfflineOnly: false });
+        YTMusicService.checkHealth().then(isOnline => set({ isApiOnline: isOnline }));
+      });
+      window.addEventListener('offline', () => {
+        set({ isOfflineOnly: true, isApiOnline: false });
+      });
+    }
+
     audioEngine.setCallbacks({
       onTimeUpdate: (currentTime, duration) => {
         set({ currentTime, duration: duration || get().duration });
@@ -197,10 +350,49 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
         } else {
           get().nextTrack();
         }
+      },
+      onError: async (_err) => {
+        const { currentTrack, activePlaybackSource } = get();
+        // If online stream fails and we have an offline MP4 cached, fallback immediately!
+        if (currentTrack && activePlaybackSource === 'network') {
+          const offlineUrl = await offlineStorage.getMP4PlaybackUrl(currentTrack.id);
+          if (offlineUrl) {
+            console.log('Network stream note, playing offline MP4:', currentTrack.title, _err);
+            set({ activePlaybackSource: 'offline-mp4' });
+            audioEngine.loadTrack(offlineUrl, true);
+          }
+        }
       }
     });
 
     audioEngine.setVolume(get().volume);
+
+    // Sync IndexedDB offline downloads with state
+    offlineStorage.getAllDownloadedRecords().then(records => {
+      if (records && records.length > 0) {
+        const dbDownloads: DownloadedTrack[] = records.map(r => ({
+          track: { ...r.track, offlineAvailable: true },
+          downloadedAt: r.downloadedAt,
+          status: 'completed'
+        }));
+        
+        const existing = get().downloadedTracks;
+        const mergedMap = new Map<string, DownloadedTrack>();
+        
+        for (const dl of existing) {
+          mergedMap.set(dl.track.id, dl);
+        }
+        for (const dl of dbDownloads) {
+          mergedMap.set(dl.track.id, dl);
+        }
+
+        const merged = Array.from(mergedMap.values());
+        set({ downloadedTracks: merged });
+        try {
+          localStorage.setItem(STORAGE_KEY_DOWNLOADS, JSON.stringify(merged));
+        } catch {}
+      }
+    });
 
     // Check YTMusic API health and populate trending galaxy tracks and explore playlists
     YTMusicService.checkHealth().then(isOnline => {
@@ -238,7 +430,7 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
     set({ currentTheme: theme });
   },
 
-  playTrack: (track: Track, newQueue?: Track[]) => {
+  playTrack: async (track: Track, newQueue?: Track[]) => {
     const { currentTrack, history, recentTracks } = get();
     
     let updatedHistory = history;
@@ -254,20 +446,29 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
       updatedQueue = newQueue.filter(t => t.id !== track.id);
     }
 
+    // Check if offline MP4 is cached in IndexedDB
+    const offlineUrl = await offlineStorage.getMP4PlaybackUrl(track.id);
+    const playbackSource: 'network' | 'offline-mp4' | 'local' = offlineUrl 
+      ? 'offline-mp4' 
+      : (track.isLocal ? 'local' : 'network');
+
+    const effectiveAudioUrl = offlineUrl || track.audioUrl;
+
     set({
-      currentTrack: track,
+      currentTrack: { ...track, offlineAvailable: !!offlineUrl },
       isPlaying: true,
       currentTime: 0,
       duration: track.duration,
       history: updatedHistory,
       recentTracks: updatedRecent,
-      queue: updatedQueue
+      queue: updatedQueue,
+      activePlaybackSource: playbackSource
     });
 
-    audioEngine.loadTrack(track.audioUrl, true);
+    audioEngine.loadTrack(effectiveAudioUrl, true);
 
-    // Auto-fetch lyrics for YouTube Music tracks if not yet loaded
-    if (track.id.startsWith('yt-') && (!track.lyrics || track.lyrics.length === 0)) {
+    // Auto-fetch lyrics for YouTube Music tracks if not yet loaded (and network available)
+    if (track.id.startsWith('yt-') && (!track.lyrics || track.lyrics.length === 0) && navigator.onLine) {
       YTMusicService.getLyrics(track.id).then(lyrics => {
         if (lyrics && lyrics.length > 0) {
           set(state => {
@@ -444,9 +645,7 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
       } catch {}
     }
 
-    try {
-      localStorage.setItem(STORAGE_KEY_LIKED_TRACKS, JSON.stringify(updatedLiked));
-    } catch {}
+    saveUserLikedTracks(updatedLiked, get().user);
 
     set({
       likedTracks: updatedLiked,
@@ -532,9 +731,7 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
     };
 
     const updated = [newPlaylist, ...get().playlists];
-    try {
-      localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(updated));
-    } catch {}
+    saveUserPlaylists(updated, get().user);
 
     set({ playlists: updated, isCreatePlaylistOpen: false });
     return newPlaylist;
@@ -553,9 +750,7 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
       return pl;
     });
 
-    try {
-      localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(updated));
-    } catch {}
+    saveUserPlaylists(updated, get().user);
 
     set({ playlists: updated });
   },
@@ -572,9 +767,7 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
       return pl;
     });
 
-    try {
-      localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(updated));
-    } catch {}
+    saveUserPlaylists(updated, get().user);
 
     let updatedSelected = selectedPlaylistData;
     if (selectedPlaylistData && selectedPlaylistData.id === playlistId) {
@@ -590,18 +783,46 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
     });
   },
 
-  deletePlaylist: (playlistId: string) => {
-    const { playlists, activeView, selectedPlaylistId, selectedPlaylistData } = get();
-    const updated = playlists.filter(p => p.id !== playlistId);
+  clearPlaylistTracks: (playlistId: string) => {
+    const { playlists, selectedPlaylistData } = get();
+    const updated = playlists.map(pl => {
+      if (pl.id === playlistId) {
+        return {
+          ...pl,
+          tracks: []
+        };
+      }
+      return pl;
+    });
 
-    try {
-      localStorage.setItem(STORAGE_KEY_PLAYLISTS, JSON.stringify(updated));
-    } catch {}
+    saveUserPlaylists(updated, get().user);
+
+    let updatedSelected = selectedPlaylistData;
+    if (selectedPlaylistData && selectedPlaylistData.id === playlistId) {
+      updatedSelected = {
+        ...selectedPlaylistData,
+        tracks: []
+      };
+    }
+
+    set({
+      playlists: updated,
+      selectedPlaylistData: updatedSelected
+    });
+  },
+
+  deletePlaylist: (playlistId: string) => {
+    const { playlists, explorePlaylists, activeView, selectedPlaylistId, selectedPlaylistData } = get();
+    const updated = playlists.filter(p => p.id !== playlistId);
+    const updatedExplore = explorePlaylists.filter(p => p.id !== playlistId);
+
+    saveUserPlaylists(updated, get().user);
 
     const isCurrentDeleted = selectedPlaylistId === playlistId || selectedPlaylistData?.id === playlistId;
 
     set({
       playlists: updated,
+      explorePlaylists: updatedExplore,
       activeView: isCurrentDeleted ? 'library' : activeView,
       selectedPlaylistId: isCurrentDeleted ? null : selectedPlaylistId,
       selectedPlaylistData: isCurrentDeleted ? null : selectedPlaylistData
@@ -707,5 +928,111 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
     MOCK_TRACKS.unshift(track);
     get().playTrack(track);
     set({ isUploadTrackOpen: false });
+  },
+
+  downloadTrack: async (track: Track) => {
+    const { downloadedTracks } = get();
+
+    const existingIdx = downloadedTracks.findIndex(d => d.track.id === track.id);
+    let updated: DownloadedTrack[];
+    
+    if (existingIdx >= 0) {
+      updated = [...downloadedTracks];
+      updated[existingIdx] = { ...updated[existingIdx], status: 'downloading' };
+    } else {
+      const newDownload: DownloadedTrack = {
+        track: { ...track, offlineAvailable: true },
+        downloadedAt: new Date().toLocaleString(),
+        status: 'downloading'
+      };
+      updated = [newDownload, ...downloadedTracks];
+    }
+    set({ downloadedTracks: updated });
+
+    // Download MP4 blob & save to IndexedDB
+    const success = await YTMusicService.downloadTrack(track);
+    const current = get().downloadedTracks.map(d =>
+      d.track.id === track.id
+        ? { 
+            ...d, 
+            track: { ...d.track, offlineAvailable: success }, 
+            status: (success ? 'completed' : 'failed') as DownloadedTrack['status'] 
+          }
+        : d
+    );
+    try {
+      localStorage.setItem(STORAGE_KEY_DOWNLOADS, JSON.stringify(current));
+    } catch {}
+    set({ downloadedTracks: current });
+  },
+
+  removeDownload: async (trackId: string) => {
+    await offlineStorage.deleteMP4(trackId);
+    const updated = get().downloadedTracks.filter(d => d.track.id !== trackId);
+    try {
+      localStorage.setItem(STORAGE_KEY_DOWNLOADS, JSON.stringify(updated));
+    } catch {}
+    set({ downloadedTracks: updated });
+  },
+
+  clearDownloads: async () => {
+    await offlineStorage.clearAll();
+    try {
+      localStorage.setItem(STORAGE_KEY_DOWNLOADS, JSON.stringify([]));
+    } catch {}
+    set({ downloadedTracks: [] });
+  },
+
+  importDownloadedMP4: async (file: File) => {
+    const title = file.name.replace(/\.[^/.]+$/, "");
+    const trackId = `local-mp4-${Date.now()}`;
+    const blobUrl = URL.createObjectURL(file);
+
+    const track: Track = {
+      id: trackId,
+      title,
+      artist: 'Downloaded MP4',
+      album: 'Offline Video & Audio',
+      duration: 210,
+      albumArt: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&auto=format&fit=crop&q=60',
+      audioUrl: blobUrl,
+      isLocal: true,
+      offlineAvailable: true,
+      genre: 'Local MP4',
+      vibeCoords: { x: 50, y: 50 }
+    };
+
+    await offlineStorage.saveMP4(trackId, track, file);
+
+    const newDownload: DownloadedTrack = {
+      track,
+      downloadedAt: new Date().toLocaleString(),
+      status: 'completed'
+    };
+
+    const updated = [newDownload, ...get().downloadedTracks];
+    set({ downloadedTracks: updated });
+    try {
+      localStorage.setItem(STORAGE_KEY_DOWNLOADS, JSON.stringify(updated));
+    } catch {}
+
+    get().playTrack(track);
+  },
+
+  refreshGalaxyTracks: async () => {
+    set({ isRefreshingGalaxy: true });
+    try {
+      const freshTrending = await YTMusicService.getTrendingTracks();
+      if (freshTrending && freshTrending.length > 0) {
+        set({ 
+          galaxyTracks: [...freshTrending, ...MOCK_TRACKS],
+          isRefreshingGalaxy: false 
+        });
+      } else {
+        set({ isRefreshingGalaxy: false });
+      }
+    } catch {
+      set({ isRefreshingGalaxy: false });
+    }
   }
 }));

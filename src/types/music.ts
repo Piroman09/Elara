@@ -23,6 +23,8 @@ export interface Track {
   isLiked?: boolean;
   plays?: number;
   addedAt?: string;
+  isLocal?: boolean;
+  offlineAvailable?: boolean;
 }
 
 export interface Artist {
@@ -107,6 +109,7 @@ export type ViewType =
   | 'playlist' 
   | 'artist' 
   | 'liked' 
+  | 'downloads'
   | 'focus';
 
 export interface GenreCategory {

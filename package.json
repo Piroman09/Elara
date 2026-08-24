@@ -4,20 +4,21 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 5173",
     "server": "python -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.4",
+    "canvas-confetti": "^1.9.4",
     "clsx": "^2.1.1",
     "framer-motion": "^11.18.2",
     "lucide-react": "^0.475.0",
-    "tailwind-merge": "^3.0.1",
-    "zustand": "^5.0.3",
-    "canvas-confetti": "^1.9.4",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^3.0.1",
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",

@@ -14,6 +14,7 @@ import { PlaylistView } from './components/views/PlaylistView';
 import { ArtistView } from './components/views/ArtistView';
 import { LikedSongsView } from './components/views/LikedSongsView';
 import { LibraryView } from './components/views/LibraryView';
+import { DownloadsView } from './components/views/DownloadsView';
 
 // Modals & Overlays
 import { LyricsView } from './components/player/LyricsView';
@@ -21,6 +22,7 @@ import { EqualizerModal } from './components/player/EqualizerModal';
 import { FullscreenModal } from './components/player/FullscreenModal';
 import { CreatePlaylistModal } from './components/modals/CreatePlaylistModal';
 import { UploadTrackModal } from './components/modals/UploadTrackModal';
+import { AuthModal } from './components/modals/AuthModal';
 
 export const App: React.FC = () => {
   const init = useMusicStore(state => state.init);
@@ -44,6 +46,8 @@ export const App: React.FC = () => {
         return <ArtistView />;
       case 'liked':
         return <LikedSongsView />;
+      case 'downloads':
+        return <DownloadsView />;
       case 'library':
         return <LibraryView />;
       default:
@@ -82,6 +86,7 @@ export const App: React.FC = () => {
       <FullscreenModal />
       <CreatePlaylistModal />
       <UploadTrackModal />
+      <AuthModal />
     </div>
   );
 };

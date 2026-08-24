@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useMusicStore } from '../../store/useMusicStore';
 import { TrackRow } from '../common/TrackRow';
-import { Play, Pause, Shuffle, Clock, Trash2, Loader2, AlertTriangle } from 'lucide-react';
+import { Play, Pause, Shuffle, Clock, Trash2, AlertTriangle, Search, Eraser } from 'lucide-react';
 import { formatTotalDuration } from '../../utils/formatters';
 
 export const PlaylistView: React.FC = () => {
@@ -14,19 +14,21 @@ export const PlaylistView: React.FC = () => {
   const togglePlay = useMusicStore(state => state.togglePlay);
   const toggleShuffle = useMusicStore(state => state.toggleShuffle);
   const deletePlaylist = useMusicStore(state => state.deletePlaylist);
+  const clearPlaylistTracks = useMusicStore(state => state.clearPlaylistTracks);
   const setActiveView = useMusicStore(state => state.setActiveView);
 
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   // If online playlist data was passed, prioritize it; else look up local playlists
   const playlist = selectedPlaylistData || playlists.find(p => p.id === selectedPlaylistId) || playlists[0];
 
   if (!playlist) {
     return (
-      <div className="p-8 text-center text-zinc-400">
+      <div className="p-8 text-center text-zinc-400 space-y-4">
         <p>Playlist not found.</p>
-        <button onClick={() => setActiveView('galaxy')} className="mt-4 px-4 py-2 bg-white/10 rounded-xl">
-          Back to Galaxy
+        <button onClick={() => setActiveView('library')} className="px-4 py-2 bg-white/10 rounded-xl text-white font-bold text-xs">
+          Back to Library
         </button>
       </div>
     );
@@ -34,7 +36,6 @@ export const PlaylistView: React.FC = () => {
 
   const isPlaylistActive = isPlaying && playlist.tracks.some(t => t.id === currentTrack?.id);
   const totalDuration = playlist.tracks.reduce((acc, t) => acc + (t.duration || 180), 0);
-  const isUserPlaylist = Boolean(playlist.isCustom || playlist.id.startsWith('custom-'));
 
   const handlePlayPlaylist = () => {
     if (playlist.tracks.length === 0) return;
@@ -57,8 +58,13 @@ export const PlaylistView: React.FC = () => {
     setConfirmDeleteOpen(false);
   };
 
+  const handleClearConfirm = () => {
+    clearPlaylistTracks(playlist.id);
+    setConfirmClearOpen(false);
+  };
+
   return (
-    <div className="space-y-6 pb-32 select-none">
+    <div className="space-y-6 pb-36 select-none">
       {/* Hero Header */}
       <div 
         className="relative px-6 md:px-10 pt-10 pb-8 flex flex-col md:flex-row items-center md:items-end gap-6 bg-gradient-to-b from-purple-900/40 via-purple-950/20 to-transparent border-b border-white/[0.06]"
@@ -76,13 +82,13 @@ export const PlaylistView: React.FC = () => {
         {/* Metadata Details */}
         <div className="flex flex-col text-center md:text-left min-w-0 flex-1">
           <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-emerald-300">
-            {playlist.isCustom ? 'Custom User Playlist' : 'YouTube Music Playlist'}
+            {playlist.isCustom ? 'Custom User Playlist' : 'Playlist Collection'}
           </span>
           <h1 className="text-2xl sm:text-4xl md:text-5xl font-black text-white tracking-tight mt-1 mb-2">
             {playlist.name}
           </h1>
           <p className="text-xs sm:text-sm text-zinc-400 max-w-2xl leading-relaxed">
-            {playlist.description}
+            {playlist.description || 'Curated playlist in your collection'}
           </p>
 
           <div className="flex items-center justify-center md:justify-start gap-2 mt-4 text-xs font-medium text-zinc-300">
@@ -100,8 +106,8 @@ export const PlaylistView: React.FC = () => {
       </div>
 
       {/* Controls Bar */}
-      <div className="px-6 md:px-10 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+      <div className="px-6 md:px-10 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
           <button
             onClick={handlePlayPlaylist}
             disabled={playlist.tracks.length === 0}
@@ -123,26 +129,57 @@ export const PlaylistView: React.FC = () => {
             <Shuffle className="w-5 h-5" />
           </button>
 
-          {isUserPlaylist && (
+          <button
+            onClick={() => setActiveView('search')}
+            className="px-4 py-2.5 rounded-2xl bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white border border-white/5 transition-all flex items-center gap-2 text-xs font-bold"
+          >
+            <Search className="w-4 h-4 text-cyan-400" />
+            <span>Add Songs</span>
+          </button>
+        </div>
+
+        {/* Playlist Management Actions */}
+        <div className="flex items-center gap-2">
+          {playlist.tracks.length > 0 && (
             <button
-              onClick={() => setConfirmDeleteOpen(true)}
-              className="p-3 rounded-full bg-white/5 hover:bg-rose-500/20 text-zinc-400 hover:text-rose-400 border border-white/5 transition-colors flex items-center gap-2 text-xs font-bold"
-              title="Delete Playlist"
+              onClick={() => setConfirmClearOpen(true)}
+              className="px-3.5 py-2 rounded-2xl bg-white/5 hover:bg-amber-500/20 text-zinc-400 hover:text-amber-300 border border-white/5 transition-colors flex items-center gap-2 text-xs font-bold"
+              title="Remove all songs from this playlist"
             >
-              <Trash2 className="w-4 h-4 text-rose-400" />
-              <span className="hidden sm:inline text-rose-300">Delete Playlist</span>
+              <Eraser className="w-4 h-4" />
+              <span>Clear Songs</span>
             </button>
           )}
+
+          <button
+            onClick={() => setConfirmDeleteOpen(true)}
+            className="px-3.5 py-2 rounded-2xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 border border-rose-500/20 transition-colors flex items-center gap-2 text-xs font-bold shadow-lg shadow-rose-950/20"
+            title="Delete this playlist"
+          >
+            <Trash2 className="w-4 h-4 text-rose-400" />
+            <span>Delete Playlist</span>
+          </button>
         </div>
       </div>
 
       {/* Tracks Table */}
       <div className="px-6 md:px-10">
         {playlist.tracks.length === 0 ? (
-          <div className="py-16 text-center glass-panel rounded-2xl border border-dashed border-zinc-800 space-y-2">
-            <Loader2 className="w-8 h-8 text-emerald-400 animate-spin mx-auto" />
-            <h3 className="text-sm font-bold text-white">This playlist has no songs</h3>
-            <p className="text-xs text-zinc-400">Search for tracks and add them using the "•••" menu</p>
+          <div className="py-16 text-center glass-panel rounded-3xl border border-dashed border-zinc-800 space-y-4 max-w-md mx-auto p-8">
+            <div className="w-12 h-12 rounded-2xl bg-zinc-800/80 flex items-center justify-center mx-auto text-zinc-400">
+              <Search className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-white">This playlist is empty</h3>
+              <p className="text-xs text-zinc-400">Search for tracks and add them using the "•••" menu</p>
+            </div>
+            <button
+              onClick={() => setActiveView('search')}
+              className="px-5 py-2.5 rounded-2xl bg-emerald-400 hover:bg-emerald-300 text-black font-extrabold text-xs shadow-lg shadow-emerald-400/20 transition-all inline-flex items-center gap-2"
+            >
+              <Search className="w-3.5 h-3.5" />
+              Search & Add Songs
+            </button>
           </div>
         ) : (
           <div className="space-y-1">
@@ -153,7 +190,7 @@ export const PlaylistView: React.FC = () => {
               <span className="hidden md:flex justify-end items-center">
                 <Clock className="w-3.5 h-3.5" />
               </span>
-              <span></span>
+              <span className="text-right">Actions</span>
             </div>
 
             {playlist.tracks.map((track, idx) => (
@@ -163,14 +200,14 @@ export const PlaylistView: React.FC = () => {
                 index={idx}
                 contextPlaylistTracks={playlist.tracks}
                 currentPlaylistId={playlist.id}
-                canRemoveFromPlaylist={isUserPlaylist}
+                canRemoveFromPlaylist={true}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* Confirm Delete Modal */}
+      {/* Confirm Delete Playlist Modal */}
       {confirmDeleteOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div 
@@ -185,7 +222,7 @@ export const PlaylistView: React.FC = () => {
             <div>
               <h3 className="text-lg font-extrabold text-white">Delete Playlist?</h3>
               <p className="text-xs text-zinc-400 mt-1">
-                Are you sure you want to delete <span className="font-bold text-white">"{playlist.name}"</span>? This action cannot be undone.
+                Are you sure you want to delete <span className="font-bold text-white">"{playlist.name}"</span>? This will permanently remove the playlist from your library.
               </p>
             </div>
 
@@ -201,6 +238,43 @@ export const PlaylistView: React.FC = () => {
                 className="px-5 py-2 rounded-2xl bg-rose-500 hover:bg-rose-400 text-xs font-extrabold text-white shadow-lg shadow-rose-500/30 transition-all"
               >
                 Delete Playlist
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Clear All Songs Modal */}
+      {confirmClearOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div 
+            className="absolute inset-0 bg-black/75 backdrop-blur-sm"
+            onClick={() => setConfirmClearOpen(false)}
+          />
+          <div className="relative w-full max-w-sm glass-panel-elevated rounded-3xl p-6 border border-white/15 shadow-2xl text-center space-y-4 z-10">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 text-amber-400 flex items-center justify-center mx-auto border border-amber-500/30">
+              <Eraser className="w-6 h-6" />
+            </div>
+
+            <div>
+              <h3 className="text-lg font-extrabold text-white">Clear All Songs?</h3>
+              <p className="text-xs text-zinc-400 mt-1">
+                Are you sure you want to remove all <span className="font-bold text-white">{playlist.tracks.length} songs</span> from <span className="font-bold text-white">"{playlist.name}"</span>?
+              </p>
+            </div>
+
+            <div className="flex items-center justify-center gap-3 pt-2">
+              <button
+                onClick={() => setConfirmClearOpen(false)}
+                className="px-4 py-2 rounded-2xl bg-white/10 hover:bg-white/20 text-xs font-bold text-zinc-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleClearConfirm}
+                className="px-5 py-2 rounded-2xl bg-amber-500 hover:bg-amber-400 text-xs font-extrabold text-black shadow-lg shadow-amber-500/30 transition-all"
+              >
+                Clear All
               </button>
             </div>
           </div>

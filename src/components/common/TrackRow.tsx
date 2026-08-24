@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Track } from '../../types/music';
 import { useMusicStore } from '../../store/useMusicStore';
 import { formatTime } from '../../utils/formatters';
-import { Play, Pause, Heart, MoreHorizontal, Plus, ListPlus, Radio, Trash2 } from 'lucide-react';
+import { Play, Pause, Heart, MoreHorizontal, Plus, ListPlus, Radio, Trash2, Download } from 'lucide-react';
 
 interface TrackRowProps {
   track: Track;
@@ -34,6 +34,7 @@ export const TrackRow: React.FC<TrackRowProps> = ({
   const addTrackToPlaylist = useMusicStore(state => state.addTrackToPlaylist);
   const removeTrackFromPlaylist = useMusicStore(state => state.removeTrackFromPlaylist);
   const setActiveView = useMusicStore(state => state.setActiveView);
+  const downloadTrack = useMusicStore(state => state.downloadTrack);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const isCurrentTrack = currentTrack?.id === track.id;
@@ -198,6 +199,18 @@ export const TrackRow: React.FC<TrackRowProps> = ({
                 >
                   <ListPlus className="w-3.5 h-3.5 text-zinc-400" />
                   Add to queue
+                </button>
+
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    downloadTrack(track);
+                    setMenuOpen(false);
+                  }}
+                  className="w-full px-4 py-2 text-left text-xs text-cyan-300 hover:bg-cyan-500/10 flex items-center gap-2.5 transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5 text-cyan-400" />
+                  Download MP4
                 </button>
 
                 {/* Remove from this playlist item */}

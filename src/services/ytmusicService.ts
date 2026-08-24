@@ -1,5 +1,7 @@
 import { Track, LyricLine, Playlist } from '../types/music';
 
+import { offlineStorage } from './offlineStorageService';
+
 const API_BASE = 'http://localhost:8000/api';
 
 export class YTMusicService {
@@ -62,6 +64,37 @@ export class YTMusicService {
     } catch (err) {
       console.warn('YTMusic API lyrics note:', err);
       return [];
+    }
+  }
+
+  public static async downloadTrack(track: Track): Promise<boolean> {
+    try {
+      const cleanId = track.id.replace('yt-', '');
+      const downloadUrl = `${API_BASE}/download/${cleanId}`;
+      
+      // Fetch binary blob
+      const res = await fetch(downloadUrl);
+      if (!res.ok) throw new Error(`Download failed with status ${res.status}`);
+      
+      const blob = await res.blob();
+      
+      // Store in IndexedDB for offline background MP4 playback
+      await offlineStorage.saveMP4(track.id, track, blob);
+      
+      // Trigger file download in browser
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = `${track.title.replace(/[/\\?%*:|"<>]/g, '')}.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      return true;
+    } catch (err) {
+      console.warn('YTMusic download error:', err);
+      return false;
     }
   }
 
