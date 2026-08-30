@@ -1,0 +1,27 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+app/build/
+
+# Stale build scratch dirs
+G_HOME/
+SAFE_BUILD/
+build_final_v1/
+build_fixed/
+.gradle_local/
+.gradle_home/
+.gradle_final/
+.gradle_success/
+.gradle_v1/
+.gradle_v2/
+
+# Web artifacts from previous experiment
+.env
+node_modules/

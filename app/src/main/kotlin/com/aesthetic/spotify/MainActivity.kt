@@ -1,0 +1,68 @@
+package com.aesthetic.spotify
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.aesthetic.spotify.ui.components.MainScaffold
+import com.aesthetic.spotify.ui.theme.AuraSonicTheme
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+
+class MainActivity : ComponentActivity() {
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        installCrashLogger()
+
+        // Android 13+ requires the runtime notification permission for the
+        // media playback notification to be visible.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        setContent {
+            AuraSonicTheme {
+                MainScaffold()
+            }
+        }
+    }
+
+    /**
+     * Writes any uncaught crash to Android/data/.../files/crash_log.txt so
+     * failures on devices without adb can be reported back to us.
+     */
+    private fun installCrashLogger() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                val sw = StringWriter()
+                throwable.printStackTrace(PrintWriter(sw))
+                val entry = buildString {
+                    append("\n==== CRASH ")
+                    append(System.currentTimeMillis())
+                    append(" (thread ")
+                    append(thread.name)
+                    append(") ====\n")
+                    append(sw.toString())
+                }
+                val dir = getExternalFilesDir(null) ?: filesDir
+                File(dir, "crash_log.txt").appendText(entry)
+            }
+            previous?.uncaughtException(thread, throwable)
+        }
+    }
+}
