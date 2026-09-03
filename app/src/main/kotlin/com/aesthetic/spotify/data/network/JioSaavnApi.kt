@@ -47,6 +47,16 @@ interface JioSaavnApi {
         @Query("api_version") apiVersion: String = "4",
         @Query("ctx") ctx: String = "web6dot0"
     ): JioWebapiPlaylistResponse
+
+    /** Song details (incl. encrypted media URL) keyed by song id. */
+    @GET("api.php")
+    suspend fun getSongDetails(
+        @Query("__call") call: String = "song.getDetails",
+        @Query("pids") pids: String,
+        @Query("_format") format: String = "json",
+        @Query("_marker") marker: String = "0",
+        @Query("api_version") apiVersion: String = "4"
+    ): Map<String, JioSong>
 }
 
 data class JioSearchResponse(val results: List<JioSong> = emptyList())

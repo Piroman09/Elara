@@ -194,16 +194,25 @@ class MusicRepository(
         val enc = info.encryptedMediaUrl ?: return null
         return Track(
             id = s.id,
-            title = s.title,
-            artist = s.subtitle
-                ?.substringBefore(" - ")?.trim()
-                ?.takeIf { it.isNotEmpty() } ?: "Unknown Artist",
-            album = info.album ?: "JioSaavn",
+            title = decodeHtmlEntities(s.title),
+            artist = decodeHtmlEntities(
+                s.subtitle
+                    ?.substringBefore(" - ")?.trim()
+                    ?.takeIf { it.isNotEmpty() } ?: "Unknown Artist"
+            ),
+            album = decodeHtmlEntities(info.album ?: "JioSaavn"),
             albumArt = JioSaavnCrypto.hiResArt(s.image),
             audioUrl = "", // resolved at play time via [resolveFullStream]
             duration = info.duration?.toIntOrNull() ?: 0,
             source = MusicSource.JIOSAAVN
         )
+    }
+
+    /** JioSaavn returns XML-escaped text ("&quot;Brahmastra&quot;") — unescape it. */
+    private fun decodeHtmlEntities(text: String): String = try {
+        android.text.Html.fromHtml(text, android.text.Html.FROM_HTML_MODE_LEGACY).toString()
+    } catch (e: Exception) {
+        text
     }
 
     /**
@@ -250,12 +259,38 @@ class MusicRepository(
      * Returns null on failure — caller falls back to the 30s preview.
      */
     suspend fun resolveFullStream(track: Track): String? {
+        // JioSaavn-sourced tracks carry their exact song id — resolve directly
+        // (precise, no search/duration matching to fail).
+        if (track.source == MusicSource.JIOSAAVN) {
+            resolveViaJioSaavnId(track.id)?.let { return it }
+        }
         return resolveViaJioSaavn(track) ?: resolveViaSoundCloud(track)
+    }
+
+    /** Exact resolution by JioSaavn song id (used for JIOSAAVN-source tracks). */
+    private suspend fun resolveViaJioSaavnId(id: String): String? {
+        return try {
+            // The details endpoint occasionally rate-limits; one quick retry.
+            var song = jioSaavn.getSongDetails(pids = id)[id]
+            if (song == null) {
+                kotlinx.coroutines.delay(400)
+                song = jioSaavn.getSongDetails(pids = id)[id]
+            }
+            val info = song?.moreInfo ?: return null
+            val enc = info.encryptedMediaUrl ?: return null
+            JioSaavnCrypto.toStreamUrl(enc, info.has320 == "true")
+        } catch (e: Exception) {
+            Log.e(TAG, "JioSaavn by-id Error: ${e.message}")
+            null
+        }
     }
 
     private suspend fun resolveViaJioSaavn(track: Track): String? {
         return try {
-            val resp = jioSaavn.searchSongs(query = "${track.title} ${track.artist}")
+            // Query with the primary artist only — full multi-artist strings
+            // produce garbage search results.
+            val primaryArtist = track.artist.substringBefore(",").trim()
+            val resp = jioSaavn.searchSongs(query = "${track.title} $primaryArtist")
             val expected = track.duration
             val best = resp.results.firstOrNull { s ->
                 val dur = s.moreInfo?.duration?.toIntOrNull()

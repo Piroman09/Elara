@@ -32,6 +32,8 @@ fun DownloadButton(
     iconSize: Dp = 22.dp
 ) {
     val states by viewModel.downloadStates.collectAsState()
+    val downloadedEntries by viewModel.downloadedTracks.collectAsState()
+    val isDownloaded = downloadedEntries.any { it.track.id == track.id }
 
     when (val state = states[track.id]) {
         is DownloadManager.State.Downloading -> {
@@ -48,13 +50,22 @@ fun DownloadButton(
                 )
             }
         }
-        is DownloadManager.State.Done -> {
+        DownloadManager.State.Done, null -> if (isDownloaded) {
             IconButton(onClick = { viewModel.deleteDownload(track.id) }) {
                 Icon(
                     Icons.Default.DownloadDone,
                     contentDescription = "Downloaded — tap to remove",
                     tint = Color(0xFF34D399),
                     modifier = Modifier.size(iconSize + 2.dp)
+                )
+            }
+        } else {
+            IconButton(onClick = { viewModel.downloadTrack(track) }) {
+                Icon(
+                    Icons.Default.Download,
+                    contentDescription = "Download",
+                    tint = tint,
+                    modifier = Modifier.size(iconSize)
                 )
             }
         }
@@ -64,16 +75,6 @@ fun DownloadButton(
                     Icons.Default.Download,
                     contentDescription = state.message,
                     tint = Color(0xFFF87171),
-                    modifier = Modifier.size(iconSize)
-                )
-            }
-        }
-        else -> {
-            IconButton(onClick = { viewModel.downloadTrack(track) }) {
-                Icon(
-                    Icons.Default.Download,
-                    contentDescription = "Download",
-                    tint = tint,
                     modifier = Modifier.size(iconSize)
                 )
             }

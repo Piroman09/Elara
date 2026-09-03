@@ -15,8 +15,7 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary = true
+        vectorDrawables {            useSupportLibrary = true
         }
     }
 
@@ -45,6 +44,13 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
+    // APK output name: Elara.apk
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "Elara.apk"
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true

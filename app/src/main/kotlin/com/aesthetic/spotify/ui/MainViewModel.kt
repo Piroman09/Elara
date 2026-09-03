@@ -235,6 +235,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // A downloaded file that went missing (cleared storage, bad migration):
+        // drop the dead entry, recover from the network automatically, and
+        // re-download so it stays available offline.
+        playbackManager.onDownloadMissing = { track ->
+            downloadManager.delete(track.id)
+            downloadTrack(track)
+            playbackManager.retryCurrentWithoutLocal()
+        }
+
         // Search honours the Music Source setting; re-runs when it changes.
         viewModelScope.launch {
             combine(searchQuery, sourcePreferences.setting) { q, s -> q to s }

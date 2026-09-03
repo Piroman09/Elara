@@ -237,19 +237,11 @@ fun PlaylistDetailScreen(
                             { addPlaylistTrack = track }
                         } else null,
                         showSource = sourceSetting == com.aesthetic.spotify.data.source.SourceSetting.AUTO,
-                        trailingExtra = {
-                            IconButton(onClick = {
-                                when (playlistId) {
-                                    "liked" -> viewModel.toggleLikeTrack(track)
-                                    "downloads" -> viewModel.deleteDownload(track.id)
-                                    else -> viewModel.removeTrackFromPlaylist(playlist.id, track.id)
-                                }
-                            }) {
-                                Icon(
-                                    Icons.Default.Close,
-                                    contentDescription = "Remove",
-                                    tint = Color.Gray
-                                )
+                        onRemoveFromPlaylist = {
+                            when (playlistId) {
+                                "liked" -> viewModel.toggleLikeTrack(track)
+                                "downloads" -> viewModel.deleteDownload(track.id)
+                                else -> viewModel.removeTrackFromPlaylist(playlist.id, track.id)
                             }
                         }
                     )

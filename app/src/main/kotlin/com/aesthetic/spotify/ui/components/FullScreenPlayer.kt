@@ -9,6 +9,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -20,6 +22,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -62,6 +66,9 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
     var showLyrics by remember { mutableStateOf(false) }
     var scrubPosition by remember { mutableStateOf<Float?>(null) }
     var showAddToPlaylist by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    val downloadStates by viewModel.downloadStates.collectAsState()
+    val downloadedEntries by viewModel.downloadedTracks.collectAsState()
 
     if (track == null) return
 
@@ -107,26 +114,72 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.align(Alignment.CenterVertically)
                 )
-                IconButton(onClick = { /* More options */ }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = null, tint = Color.White)
+                IconButton(onClick = { showMoreMenu = true }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "More options", tint = Color.White)
+                }
+                DropdownMenu(
+                    expanded = showMoreMenu,
+                    onDismissRequest = { showMoreMenu = false },
+                    modifier = Modifier.background(Color(0xFF1A1A1C))
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Add to playlist", color = Color.White) },
+                        leadingIcon = {
+                            Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = Color.White)
+                        },
+                        onClick = {
+                            showMoreMenu = false
+                            showAddToPlaylist = true
+                        }
+                    )
+                    when {
+                        downloadStates?.get(track!!.id)
+                            is com.aesthetic.spotify.data.download.DownloadManager.State.Downloading -> {
+                            DropdownMenuItem(
+                                text = { Text("Downloading…", color = Color.Gray) },
+                                leadingIcon = {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Color.White
+                                    )
+                                },
+                                onClick = {}
+                            )
+                        }
+                        downloadedEntries.any { it.track.id == track!!.id } -> {
+                            DropdownMenuItem(
+                                text = { Text("Remove download", color = Color.White) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.DownloadDone,
+                                        contentDescription = null,
+                                        tint = Color(0xFF34D399)
+                                    )
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    viewModel.deleteDownload(track!!.id)
+                                }
+                            )
+                        }
+                        else -> {
+                            DropdownMenuItem(
+                                text = { Text("Download", color = Color.White) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Download, contentDescription = null, tint = Color.White)
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    viewModel.downloadTrack(track!!)
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(4.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                IconButton(onClick = { showAddToPlaylist = true }) {
-                    Icon(
-                        Icons.Default.PlaylistAdd,
-                        contentDescription = "Add to playlist",
-                        tint = Color.White
-                    )
-                }
-                DownloadButton(track = track!!, viewModel = viewModel, tint = Color.White)
-            }
 
             Spacer(modifier = Modifier.weight(1f))
 

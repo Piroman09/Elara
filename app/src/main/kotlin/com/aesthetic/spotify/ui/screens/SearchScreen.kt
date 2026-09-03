@@ -8,6 +8,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -115,9 +119,14 @@ fun SearchTrackItem(
     onClick: () -> Unit,
     viewModel: MainViewModel? = null,
     onAddToPlaylist: (() -> Unit)? = null,
-    trailingExtra: @Composable (() -> Unit)? = null,
+    onRemoveFromPlaylist: (() -> Unit)? = null,
     showSource: Boolean = false
 ) {
+    val menuOpen = remember { mutableStateOf(false) }
+    val downloadStates = viewModel?.downloadStates?.collectAsState()?.value
+    val downloadedEntries = viewModel?.downloadedTracks?.collectAsState()?.value
+    val isDownloaded = downloadedEntries?.any { it.track.id == track.id } == true
+
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -147,20 +156,103 @@ fun SearchTrackItem(
                         )
                     }
                 }
-                if (viewModel != null) {
-                    if (onAddToPlaylist != null) {
-                        IconButton(onClick = onAddToPlaylist) {
-                            Icon(
-                                Icons.Default.PlaylistAdd,
-                                contentDescription = "Add to playlist",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
+
+                Box {
+                    IconButton(onClick = { menuOpen.value = true }) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = "More options",
+                            tint = Color.White
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuOpen.value,
+                        onDismissRequest = { menuOpen.value = false },
+                        modifier = Modifier.background(Color(0xFF1A1A1C))
+                    ) {
+                        if (onAddToPlaylist != null) {
+                            DropdownMenuItem(
+                                text = { Text("Add to playlist", color = Color.White) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = Color.White)
+                                },
+                                onClick = {
+                                    menuOpen.value = false
+                                    onAddToPlaylist()
+                                }
+                            )
+                        }
+                        if (viewModel != null) {
+                            when {
+                                downloadStates?.get(track.id) is com.aesthetic.spotify.data.download.DownloadManager.State.Downloading -> {
+                                    DropdownMenuItem(
+                                        text = { Text("Downloading…", color = Color.Gray) },
+                                        leadingIcon = {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                                color = Color.White
+                                            )
+                                        },
+                                        onClick = {}
+                                    )
+                                }
+                                isDownloaded -> {
+                                    DropdownMenuItem(
+                                        text = { Text("Remove download", color = Color.White) },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Default.DownloadDone,
+                                                contentDescription = null,
+                                                tint = Color(0xFF34D399)
+                                            )
+                                        },
+                                        onClick = {
+                                            menuOpen.value = false
+                                            viewModel.deleteDownload(track.id)
+                                        }
+                                    )
+                                }
+                                downloadStates?.get(track.id) is com.aesthetic.spotify.data.download.DownloadManager.State.Error -> {
+                                    DropdownMenuItem(
+                                        text = { Text("Download failed — retry", color = Color(0xFFF87171)) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Download, contentDescription = null, tint = Color(0xFFF87171))
+                                        },
+                                        onClick = {
+                                            menuOpen.value = false
+                                            viewModel.downloadTrack(track)
+                                        }
+                                    )
+                                }
+                                else -> {
+                                    DropdownMenuItem(
+                                        text = { Text("Download", color = Color.White) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Download, contentDescription = null, tint = Color.White)
+                                        },
+                                        onClick = {
+                                            menuOpen.value = false
+                                            viewModel.downloadTrack(track)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        if (onRemoveFromPlaylist != null) {
+                            DropdownMenuItem(
+                                text = { Text("Remove from playlist", color = Color(0xFFF87171)) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Close, contentDescription = null, tint = Color(0xFFF87171))
+                                },
+                                onClick = {
+                                    menuOpen.value = false
+                                    onRemoveFromPlaylist()
+                                }
                             )
                         }
                     }
-                    DownloadButton(track = track, viewModel = viewModel)
                 }
-                if (trailingExtra != null) trailingExtra()
             }
     }
 }

@@ -27,6 +27,15 @@ review GPL-3.0 obligations for derivative-work status before distribution.
 Not ported from Echo (deliberately): PoToken/BotGuard generation, account
 auth, playlists, library, lyrics, transcripts, uploads, UI, database.
 
+## Download storage behavior
+
+The "downloads land in the public Music folder" behavior
+(`Music/Elara/<title>.<ext>` via the system DownloadManager, MediaStore-aware
+delete) was designed with reference to **BloomeeTunes**
+(https://github.com/HemantKArya/BloomeeTunes, GPL-2.0). No BloomeeTunes source
+code was copied — ELARA's downloader is its own Kotlin implementation over
+Android's system DownloadManager and MediaStore.
+
 ## Other backends
 
 - iTunes Search API / Apple RSS (catalog & charts) — Apple, public interfaces.

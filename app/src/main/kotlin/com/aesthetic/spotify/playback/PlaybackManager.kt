@@ -10,6 +10,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.aesthetic.spotify.data.model.Track
@@ -52,7 +53,13 @@ class PlaybackManager private constructor(context: Context) {
 
     val exoPlayer: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(
-            DefaultMediaSourceFactory(context).setDataSourceFactory(httpDataSourceFactory)
+            DefaultMediaSourceFactory(context).setDataSourceFactory(
+                // DefaultDataSource routes file:// to FileDataSource (downloaded
+                // songs) and http(s) to the HTTP factory (streaming). Passing
+                // the HTTP factory alone made local playback fail with
+                // ERROR_CODE_IO_UNSPECIFIED "Source error".
+                DefaultDataSource.Factory(context, httpDataSourceFactory)
+            )
         )
         .build()
 
@@ -93,6 +100,12 @@ class PlaybackManager private constructor(context: Context) {
     private val resolvedUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var playGeneration = 0
 
+    /** Notifies the app when a downloaded file turned out to be missing/corrupt. */
+    var onDownloadMissing: ((Track) -> Unit)? = null
+
+    private var lastUrlWasLocal = false
+    private val autoHealedIds = mutableSetOf<String>()
+
     init {
         exoPlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -128,7 +141,23 @@ class PlaybackManager private constructor(context: Context) {
                     else -> "Playback error (${error.errorCodeName})"
                 }
                 _playbackError.value = friendly
-                appendDiagnostic("PLAYER_ERROR id=${exoPlayer.currentMediaItem?.mediaId} code=${error.errorCodeName} msg=${error.message}")
+                appendDiagnostic("PLAYER_ERROR id=${exoPlayer.currentMediaItem?.mediaId} code=${error.errorCodeName} msg=${error.message} cause=${error.cause?.javaClass?.simpleName}: ${error.cause?.message}")
+
+                // Self-heal: the local file vanished (failed migration, cleared
+                // storage). Drop the dead download entry and retry from the
+                // network once. User taps reset the guard.
+                val fileMissing = lastUrlWasLocal && (
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+                        error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED
+                    )
+                val currentId = exoPlayer.currentMediaItem?.mediaId
+                val currentTrack = _queue.value.getOrNull(queueIndex)
+                if (fileMissing && currentId != null && currentTrack != null &&
+                    autoHealedIds.add(currentId)
+                ) {
+                    appendDiagnostic("SELF_HEAL retry from network id=$currentId")
+                    onDownloadMissing?.invoke(currentTrack)
+                }
             }
         })
 
@@ -148,6 +177,7 @@ class PlaybackManager private constructor(context: Context) {
     /** Replace the queue and start playing [startIndex]. */
     fun setQueue(tracks: List<Track>, startIndex: Int) {
         if (tracks.isEmpty()) return
+        autoHealedIds.clear()
         _queue.value = tracks
         playAt(startIndex.coerceIn(0, tracks.lastIndex))
     }
@@ -177,6 +207,7 @@ class PlaybackManager private constructor(context: Context) {
             // The local check runs first so downloads always win offline,
             // even when a (now unusable) remote URL is cached.
             val localUrl = localSourceResolver?.invoke(track)
+            lastUrlWasLocal = localUrl != null
             val url = localUrl
                 ?: resolvedUrls[track.id]
                 ?: streamResolver?.invoke(track)?.also { resolvedUrls[track.id] = it }
@@ -252,6 +283,14 @@ class PlaybackManager private constructor(context: Context) {
 
     fun release() {
         exoPlayer.release()
+    }
+
+    /** Retries the current track without its (now removed) local file. */
+    fun retryCurrentWithoutLocal() {
+        scope.launch {
+            kotlinx.coroutines.delay(150)
+            playAt(queueIndex)
+        }
     }
 
     /** Appends playback failures to a shareable diagnostics file on-device. */
