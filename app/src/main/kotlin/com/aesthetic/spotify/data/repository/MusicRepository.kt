@@ -14,6 +14,7 @@ import com.aesthetic.spotify.data.network.MusicApi
 import com.aesthetic.spotify.data.network.RetrofitClient
 import com.aesthetic.spotify.data.network.SCSearchResponse
 import com.aesthetic.spotify.data.network.SoundCloudApi
+import com.aesthetic.spotify.data.network.SpotifyPlaylistImporter
 import com.aesthetic.spotify.data.network.YouTubeMusicApi
 import com.aesthetic.spotify.data.source.SourceSetting
 import kotlinx.coroutines.async
@@ -78,7 +79,19 @@ class MusicRepository(
     )
 
     fun getTrendingTracks(): Flow<List<Track>> = flow {
+        // Emit fallback static hits first for instant UI.
         emit(fallbackHits)
+        // Primary source: JioSaavn editorial chart playlist.
+        try {
+            val jioTracks = getJioSaavnTrending()
+            if (jioTracks.isNotEmpty()) {
+                emit(jioTracks)
+                return@flow
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "JioSaavn Trending Error: ${e.message}")
+        }
+        // Secondary source: Spotify daily charts.
         try {
             val entries = api.getTrending().feed?.entry ?: emptyList()
             val mapped = entries.mapIndexedNotNull { index, entry ->
@@ -88,7 +101,14 @@ class MusicRepository(
             }
             if (mapped.isNotEmpty()) emit(mapped)
         } catch (e: Exception) {
-            Log.e(TAG, "Trending Error: ${e.message}")
+            Log.e(TAG, "Spotify Trending Error: ${e.message}")
+        }
+        // Tertiary source: YouTube Music top songs.
+        try {
+            val yt = YouTubeMusicApi.search("top songs this week", limit = 30)
+            if (yt.isNotEmpty()) emit(yt)
+        } catch (e: Exception) {
+            Log.e(TAG, "YouTubeMusic Trending Error: ${e.message}")
         }
     }
 
@@ -170,14 +190,56 @@ class MusicRepository(
     }
 
     /**
-     * Home's Trending Songs, from the provider selected by the Music Source
-     * setting: JioSaavn uses its editorial chart playlist ("Chartbusters…"),
-     * YouTube Music uses a top-songs search.
+     * Home's Trending Songs:
+     * Primary: Spotify's official daily trending charts ("Today's Top Hits" / "Top 50 Global").
+     * Fallback: YouTube Music top songs or JioSaavn chartbusters based on source preference.
      */
-    suspend fun getTrendingBySource(setting: SourceSetting): List<Track> = when (setting) {
-        SourceSetting.YOUTUBE_MUSIC -> YouTubeMusicApi.search("top songs this week", limit = 15)
-        else -> getJioSaavnTrending()
+    suspend fun getTrendingTracks(setting: SourceSetting = SourceSetting.AUTO): List<Track> {
+        // 1. Attempt to fetch Spotify's premier daily chart: "Today's Top Hits" (37i9dQZF1DXcBWIGoYBM5M)
+        try {
+            val spotifyResult = SpotifyPlaylistImporter.fetchPlaylist("37i9dQZF1DXcBWIGoYBM5M")
+            if (spotifyResult.tracks.isNotEmpty()) {
+                Log.d(TAG, "Fetched ${spotifyResult.tracks.size} trending tracks from Spotify Today's Top Hits")
+                return spotifyResult.tracks
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Spotify Today's Top Hits fetch failed: ${e.message}")
+        }
+
+        // 2. Secondary Spotify attempt: "Top 50 - Global" (37i9dQZEVXbMDoHDwVN2tF)
+        try {
+            val globalResult = SpotifyPlaylistImporter.fetchPlaylist("37i9dQZEVXbMDoHDwVN2tF")
+            if (globalResult.tracks.isNotEmpty()) {
+                Log.d(TAG, "Fetched ${globalResult.tracks.size} trending tracks from Spotify Top 50 Global")
+                return globalResult.tracks
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Spotify Top 50 Global fetch failed: ${e.message}")
+        }
+
+        // 3. Fallback based on Music Source setting
+        return when (setting) {
+            SourceSetting.YOUTUBE_MUSIC -> {
+                try {
+                    YouTubeMusicApi.search("top songs this week", limit = 30)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+            }
+            SourceSetting.JIOSAAVN -> getJioSaavnTrending()
+            SourceSetting.AUTO -> {
+                try {
+                    val yt = YouTubeMusicApi.search("top songs this week", limit = 25)
+                    if (yt.isNotEmpty()) yt else getJioSaavnTrending()
+                } catch (e: Exception) {
+                    getJioSaavnTrending()
+                }
+            }
+        }.ifEmpty { fallbackHits }
     }
+
+    suspend fun getTrendingBySource(setting: SourceSetting): List<Track> =
+        getTrendingTracks(setting)
 
     suspend fun getJioSaavnTrending(): List<Track> {
         val featured = getFeaturedPlaylists()
@@ -261,11 +323,27 @@ class MusicRepository(
     suspend fun resolveFullStream(track: Track): String? {
         // JioSaavn-sourced tracks carry their exact song id — resolve directly
         // (precise, no search/duration matching to fail).
-        if (track.source == MusicSource.JIOSAAVN) {
+        if (track.source == MusicSource.JIOSAAVN && !track.id.startsWith("spotify_")) {
             resolveViaJioSaavnId(track.id)?.let { return it }
         }
-        return resolveViaJioSaavn(track) ?: resolveViaSoundCloud(track)
+        return resolveViaJioSaavn(track)
+            ?: resolveViaYouTubeMusic(track)
+            ?: resolveViaSoundCloud(track)
     }
+
+    private suspend fun resolveViaYouTubeMusic(track: Track): String? {
+        return try {
+            val primaryArtist = track.artist.substringBefore(",").trim()
+            val results = YouTubeMusicApi.search("${track.title} $primaryArtist", limit = 5)
+            val best = results.firstOrNull() ?: return null
+            val videoId = best.videoId ?: best.id
+            YouTubeMusicApi.resolveStreamUrl(videoId)
+        } catch (e: Exception) {
+            Log.e(TAG, "YouTubeMusic resolve Error: ${e.message}")
+            null
+        }
+    }
+
 
     /** Exact resolution by JioSaavn song id (used for JIOSAAVN-source tracks). */
     private suspend fun resolveViaJioSaavnId(id: String): String? {
