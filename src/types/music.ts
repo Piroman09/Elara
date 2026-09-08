@@ -17,6 +17,7 @@ export interface Track {
   genre: string;
   mood?: string;
   vibeCoords?: { x: number; y: number }; // For Vibe Galaxy map
+  tags?: string[]; // General tags for similarity matching
   energy?: number; // 0-100
   lyrics?: LyricLine[];
   accentColor?: string;

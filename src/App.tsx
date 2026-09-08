@@ -5,6 +5,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { Navbar } from './components/layout/Navbar';
 import { FloatingIslandPlayer } from './components/player/FloatingIslandPlayer';
 import { RightSidebar } from './components/layout/RightSidebar';
+import { QueueDrawer } from './components/player/QueueDrawer';
 
 // Views
 import { VibeGalaxyView } from './components/views/VibeGalaxyView';
@@ -74,7 +75,7 @@ export const App: React.FC = () => {
         </main>
 
         {/* Right Drawer (Up Next / Queue) */}
-        <RightSidebar />
+        <QueueDrawer />
       </div>
 
       {/* Floating Dynamic Island Player */}

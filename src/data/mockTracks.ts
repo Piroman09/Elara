@@ -105,6 +105,7 @@ export const MOCK_TRACKS: Track[] = [
     accentColor: '#ec4899',
     plays: 1420500,
     addedAt: '2026-08-10',
+    tags: ['synthwave', 'retrowave', 'electronic', 'night', 'driving'],
     lyrics: [
       { id: '1', time: 0, text: '♪ (Synth wave intro resonates through the night) ♪' },
       { id: '2', time: 12, text: 'Neon reflections on the wet asphalt' },
@@ -139,6 +140,7 @@ export const MOCK_TRACKS: Track[] = [
     accentColor: '#8b5cf6',
     plays: 890400,
     addedAt: '2026-08-12',
+    tags: ['lofi', 'chill', 'jazzhop', 'rain', 'cozy'],
     lyrics: [
       { id: '1', time: 0, text: '♪ (Warm vinyl crackle & soft rain against glass) ♪' },
       { id: '2', time: 10, text: 'Steam rises gently from the porcelain cup' },
@@ -168,6 +170,7 @@ export const MOCK_TRACKS: Track[] = [
     accentColor: '#06b6d4',
     plays: 2150000,
     addedAt: '2026-08-15',
+    tags: ['cyberpunk', 'electronic', 'darksynth', 'night', 'driving'],
     lyrics: [
       { id: '1', time: 0, text: '♪ (Pulsing bass sequence initializing) ♪' },
       { id: '2', time: 14, text: 'Data streams rushing through the spine' },
@@ -193,6 +196,7 @@ export const MOCK_TRACKS: Track[] = [
     accentColor: '#10b981',
     plays: 640000,
     addedAt: '2026-08-18',
+    tags: ['ambient', 'space', 'piano', 'relaxing', 'cosmic'],
     lyrics: [
       { id: '1', time: 0, text: '♪ (Gentle atmospheric pads and cosmic resonance) ♪' },
       { id: '2', time: 20, text: 'Drifting beyond the edge of gravity' },
@@ -215,6 +219,7 @@ export const MOCK_TRACKS: Track[] = [
     accentColor: '#f43f5e',
     plays: 1120000,
     addedAt: '2026-08-20',
+    tags: ['indie', 'pop', 'guitar', 'summer', 'chill'],
     lyrics: [
       { id: '1', time: 0, text: '♪ (Upbeat guitar groove and bassline) ♪' },
       { id: '2', time: 11, text: 'Golden rays shining in your rearview mirror' }
