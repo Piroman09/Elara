@@ -30,6 +30,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.util.concurrent.ConcurrentHashMap
 
 @OptIn(FlowPreview::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -87,6 +90,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isPlayerExpanded = MutableStateFlow(false)
     val isPlayerExpanded: StateFlow<Boolean> = _isPlayerExpanded
+
+    private val _isQueueOpen = MutableStateFlow(false)
+    val isQueueOpen: StateFlow<Boolean> = _isQueueOpen
+
+    private val _similarTracks = MutableStateFlow<List<Track>>(emptyList())
+    val similarTracks: StateFlow<List<Track>> = _similarTracks
 
     private val _lyrics = MutableStateFlow<List<LyricLine>>(emptyList())
     val currentLyrics: StateFlow<List<LyricLine>> = _lyrics
@@ -305,6 +314,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isPlayerExpanded.value = expanded
     }
 
+    fun setQueueOpen(open: Boolean) {
+        _isQueueOpen.value = open
+        if (open) {
+            computeSimilarTracks()
+        }
+    }
+
+    private fun computeSimilarTracks() {
+        val current = currentTrack.value
+        val queue = playbackManager.queue.value
+        if (current == null) {
+            _similarTracks.value = emptyList()
+            return
+        }
+
+        // Use trending tracks and recently played as candidate pool for similar tracks
+        val candidates = (trendingTracks.value + recentlyPlayed.value + queue).distinctBy { it.id }
+        val similar = findSimilarTracks(current, candidates, queue)
+        _similarTracks.value = similar
+    }
+
+    private fun findSimilarTracks(
+        current: Track,
+        candidates: List<Track>,
+        queue: List<Track>
+    ): List<Track> {
+        val excludedIds = (current.id + queue.map { it.id }).toSet()
+        val currentArtist = current.artist.lowercase()
+        val currentGenre = current.genre.lowercase()
+
+        return candidates
+            .filter { it.id !in excludedIds }
+            .map { track ->
+                var score = 0
+                // Same artist: high score
+                if (track.artist.lowercase() == currentArtist) score += 50
+                // Same genre: medium score
+                if (track.genre.lowercase() == currentGenre) score += 30
+                // Same source: small boost
+                if (track.source == current.source) score += 5
+                // Energy similarity
+                if (track.energy != null && current.energy != null) {
+                    val energyDiff = kotlin.math.abs(track.energy!! - current.energy!!)
+                    score += max(0, 15 - energyDiff.toInt())
+                }
+                track to score
+            }
+            .filter { it.second > 10 } // Minimum threshold
+            .sortedByDescending { it.second }
+            .take(10)
+            .map { it.first }
+    }
+
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
         if (query.isBlank()) {
@@ -329,6 +391,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun seekTo(ms: Long) {
         playbackManager.seekTo(ms)
+    }
+
+    fun removeFromQueue(index: Int) {
+        playbackManager.removeFromQueue(index)
+    }
+
+    fun clearQueue() {
+        playbackManager.clearQueue()
     }
 
     fun togglePlay() {

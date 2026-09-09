@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -38,6 +39,7 @@ fun FloatingPlayer(
     onTogglePlay: () -> Unit,
     onNext: () -> Unit,
     onExpand: () -> Unit,
+    onQueue: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (currentTrack == null) return
@@ -114,6 +116,14 @@ fun FloatingPlayer(
                 Icon(
                     imageVector = Icons.Default.SkipNext,
                     contentDescription = "Next",
+                    tint = Color.White
+                )
+            }
+
+            IconButton(onClick = onQueue) {
+                Icon(
+                    imageVector = Icons.Default.QueueMusic,
+                    contentDescription = "Queue",
                     tint = Color.White
                 )
             }

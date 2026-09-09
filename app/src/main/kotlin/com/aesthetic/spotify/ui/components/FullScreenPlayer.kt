@@ -51,8 +51,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.theme.AuraBg
+import com.aesthetic.spotify.ui.theme.PixelBg
 import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.style.TextOverflow
+
 @Composable
 fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
     val track by viewModel.currentTrack.collectAsState()
@@ -90,7 +106,7 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(accent.copy(alpha = 0.5f), AuraBg)
+                    colors = listOf(accent.copy(alpha = 0.5f), PixelBg)
                 )
             )
             .statusBarsPadding()
@@ -133,7 +149,7 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                         }
                     )
                     when {
-                        downloadStates?.get(track!!.id)
+                        downloadStates[track!!.id]
                             is com.aesthetic.spotify.data.download.DownloadManager.State.Downloading -> {
                             DropdownMenuItem(
                                 text = { Text("Downloading…", color = Color.Gray) },
@@ -196,21 +212,37 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f)
-                        .clip(RoundedCornerShape(24.dp)),
+                        .clip(RoundedCornerShape(28.dp)),
                     contentScale = ContentScale.Crop
                 )
             }
 
-            Spacer(modifier = Modifier.height(48.dp))
+            Spacer(modifier = Modifier.height(36.dp))
 
+            // Track title and artist
             Column(modifier = Modifier.fillMaxWidth()) {
-                Text(text = track!!.title, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                Text(text = track!!.artist, color = Color.LightGray, fontSize = 18.sp)
+                Text(
+                    text = track!!.title, 
+                    color = Color.White, 
+                    fontSize = 24.sp, 
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = track!!.artist, 
+                    color = Color.LightGray, 
+                    fontSize = 16.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            Slider(
+            // Android 14/15 Squiggly Waveform Seekbar
+            PixelSquigglySlider(
                 value = sliderValue,
                 onValueChange = { scrubPosition = it },
                 onValueChangeFinished = {
@@ -218,11 +250,8 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                     scrubPosition = null
                 },
                 valueRange = 0f..sliderMax,
-                colors = SliderDefaults.colors(
-                    thumbColor = Color.White,
-                    activeTrackColor = Color(0xFF8B5CF6),
-                    inactiveTrackColor = Color.White.copy(alpha = 0.25f)
-                )
+                isPlaying = isPlaying,
+                activeColor = com.aesthetic.spotify.ui.theme.PixelSage
             )
 
             Row(
@@ -262,18 +291,23 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                 IconButton(onClick = { viewModel.previous() }) {
                     Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White, modifier = Modifier.size(48.dp))
                 }
+
+                // Pixel Material 3 Squircle Play/Pause FAB
                 FloatingActionButton(
                     onClick = { viewModel.togglePlay() },
-                    containerColor = Color.White,
+                    containerColor = com.aesthetic.spotify.ui.theme.PixelSage,
                     contentColor = Color.Black,
-                    shape = RoundedCornerShape(100)
+                    shape = RoundedCornerShape(26.dp),
+                    modifier = Modifier.size(64.dp)
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (isPlaying) "Pause" else "Play",
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp),
+                        tint = Color.Black
                     )
                 }
+
                 IconButton(onClick = { viewModel.next() }) {
                     Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(48.dp))
                 }
@@ -281,7 +315,7 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                     Icon(
                         imageVector = Icons.Default.Lyrics,
                         contentDescription = "Lyrics",
-                        tint = if (showLyrics) Color.Cyan else Color.White
+                        tint = if (showLyrics) com.aesthetic.spotify.ui.theme.PixelSage else Color.White
                     )
                 }
             }
@@ -378,4 +412,99 @@ private fun formatTime(ms: Long): String {
     val m = totalSec / 60
     val s = totalSec % 60
     return "%d:%02d".format(m, s)
+}
+
+@Composable
+fun PixelSquigglySlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    isPlaying: Boolean,
+    modifier: Modifier = Modifier,
+    activeColor: Color = com.aesthetic.spotify.ui.theme.PixelSage,
+    inactiveColor: Color = Color.White.copy(alpha = 0.2f)
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "waveTransition")
+    val phase by if (isPlaying) {
+        infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2 * Math.PI).toFloat(),
+            animationSpec = infiniteRepeatable(
+                animation = tween(1200, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "phaseAnim"
+        )
+    } else {
+        remember { mutableStateOf(0f) }
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(36.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxWidth().height(24.dp)) {
+            val range = (valueRange.endInclusive - valueRange.start).coerceAtLeast(1f)
+            val progressFraction = ((value - valueRange.start) / range).coerceIn(0f, 1f)
+            val progressX = progressFraction * size.width
+            val midY = size.height / 2f
+            val amp = if (isPlaying) 3.5.dp.toPx() else 0f
+            val wavelength = 24.dp.toPx()
+            val pi2 = (Math.PI * 2.0).toFloat()
+
+            // Inactive straight track
+            if (progressX < size.width) {
+                drawLine(
+                    color = inactiveColor,
+                    start = Offset(progressX, midY),
+                    end = Offset(size.width, midY),
+                    strokeWidth = 4.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+
+            // Active Squiggly waveform path
+            if (progressX > 0f) {
+                val path = Path().apply {
+                    moveTo(0f, midY)
+                    var x = 0f
+                    val step = 4f
+                    while (x <= progressX) {
+                        val y = midY + kotlin.math.sin(((x / wavelength) * pi2 - phase).toDouble()).toFloat() * amp
+                        lineTo(x, y)
+                        x += step
+                    }
+                    val finalY = midY + kotlin.math.sin(((progressX / wavelength) * pi2 - phase).toDouble()).toFloat() * amp
+                    lineTo(progressX, finalY)
+                }
+                drawPath(
+                    path = path,
+                    color = activeColor,
+                    style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+                )
+
+                // Pixel Slider Thumb
+                val thumbY = midY + kotlin.math.sin(((progressX / wavelength) * pi2 - phase).toDouble()).toFloat() * amp
+                drawCircle(
+                    color = Color.White,
+                    radius = 6.dp.toPx(),
+                    center = Offset(progressX, thumbY)
+                )
+            }
+        }
+
+        // Invisible native Slider overlay for silky touch scrub gestures
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished,
+            valueRange = valueRange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .alpha(0f)
+        )
+    }
 }

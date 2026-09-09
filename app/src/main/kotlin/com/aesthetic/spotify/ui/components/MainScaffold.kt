@@ -33,6 +33,7 @@ import com.aesthetic.spotify.ui.screens.HomeScreen
 import com.aesthetic.spotify.ui.screens.LibraryScreen
 import com.aesthetic.spotify.ui.screens.PlaylistDetailScreen
 import com.aesthetic.spotify.ui.screens.SearchScreen
+import com.aesthetic.spotify.ui.components.QueueDrawer
 
 sealed class Screen(val route: String, val label: String, val icon: @Composable () -> Unit) {
     object Home : Screen("home", "Home", { Icon(Icons.Default.Home, contentDescription = null) })
@@ -48,6 +49,7 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
     val currentTrack by viewModel.currentTrack.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val isPlayerExpanded by viewModel.isPlayerExpanded.collectAsState()
+    val isQueueOpen by viewModel.isQueueOpen.collectAsState()
     val positionMs by viewModel.positionMs.collectAsState()
     val durationMs by viewModel.durationMs.collectAsState()
 
@@ -71,7 +73,8 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
                                 progress = progress,
                                 onTogglePlay = { viewModel.togglePlay() },
                                 onNext = { viewModel.next() },
-                                onExpand = { viewModel.setPlayerExpanded(true) }
+                                onExpand = { viewModel.setPlayerExpanded(true) },
+                                onQueue = { viewModel.setQueueOpen(true) }
                             )
                         }
                         NavigationBar(
@@ -108,40 +111,52 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
                     }
                 }
             ) { innerPadding ->
-                NavHost(
-                    navController,
-                    startDestination = Screen.Home.route,
-                    Modifier.padding(innerPadding)
+                Box(
+                    modifier = Modifier.padding(innerPadding).fillMaxSize()
                 ) {
-                    composable(Screen.Home.route) {
-                        HomeScreen(viewModel, onOpenBrowse = {
-                            navController.navigate("browse_playlist")
-                        })
+                    NavHost(
+                        navController,
+                        startDestination = Screen.Home.route,
+                        Modifier.fillMaxSize()
+                    ) {
+                        composable(Screen.Home.route) {
+                            HomeScreen(viewModel, onOpenBrowse = {
+                                navController.navigate("browse_playlist")
+                            })
+                        }
+                        composable(Screen.Search.route) { SearchScreen(viewModel) }
+                        composable(Screen.Library.route) {
+                            LibraryScreen(viewModel, onOpenPlaylist = { id ->
+                                navController.navigate("playlist/$id")
+                            })
+                        }
+                        composable("playlist/{playlistId}") { backStackEntry ->
+                            val playlistId = backStackEntry.arguments?.getString("playlistId")
+                                ?: return@composable
+                            PlaylistDetailScreen(
+                                viewModel = viewModel,
+                                playlistId = playlistId,
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+                        composable("browse_playlist") {
+                            BrowsePlaylistScreen(
+                                viewModel = viewModel,
+                                onBack = {
+                                    viewModel.clearBrowsePlaylist()
+                                    navController.popBackStack()
+                                }
+                            )
+                        }
                     }
-                    composable(Screen.Search.route) { SearchScreen(viewModel) }
-                    composable(Screen.Library.route) {
-                        LibraryScreen(viewModel, onOpenPlaylist = { id ->
-                            navController.navigate("playlist/$id")
-                        })
-                    }
-                    composable("playlist/{playlistId}") { backStackEntry ->
-                        val playlistId = backStackEntry.arguments?.getString("playlistId")
-                            ?: return@composable
-                        PlaylistDetailScreen(
-                            viewModel = viewModel,
-                            playlistId = playlistId,
-                            onBack = { navController.popBackStack() }
-                        )
-                    }
-                    composable("browse_playlist") {
-                        BrowsePlaylistScreen(
-                            viewModel = viewModel,
-                            onBack = {
-                                viewModel.clearBrowsePlaylist()
-                                navController.popBackStack()
-                            }
-                        )
-                    }
+
+                    // Queue Drawer overlay
+                    QueueDrawer(
+                        viewModel = viewModel,
+                        isOpen = isQueueOpen,
+                        onDismiss = { viewModel.setQueueOpen(false) },
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
             }
         }
