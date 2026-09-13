@@ -105,7 +105,16 @@ class PlaybackManager private constructor(context: Context) {
     private val _isShuffle = MutableStateFlow(false)
     val isShuffle: StateFlow<Boolean> = _isShuffle
 
-    private val _repeatMode = MutableStateFlow(RepeatMode.ALL)
+    /**
+     * Defaults to [RepeatMode.OFF] so the starting state matches the first step
+     * of [cycleRepeat]'s `OFF → ALL → ONE` rotation.
+     *
+     * It used to default to ALL, which put the app out of step with its own
+     * cycle: the repeat button opened already tinted violet ("on"), and the
+     * first tap jumped straight to repeat-*one*. Getting back to OFF took two
+     * taps. Keep this default and the head of [cycleRepeat] in agreement.
+     */
+    private val _repeatMode = MutableStateFlow(RepeatMode.OFF)
     val repeatMode: StateFlow<RepeatMode> = _repeatMode
 
     /**
@@ -597,7 +606,7 @@ class PlaybackManager private constructor(context: Context) {
             _isShuffle.value = prefs.getBoolean(KEY_SHUFFLE, false)
             _repeatMode.value =
                 runCatching { RepeatMode.valueOf(prefs.getString(KEY_REPEAT, null) ?: "") }
-                    .getOrDefault(RepeatMode.ALL)
+                    .getOrDefault(RepeatMode.OFF)
             if (_isShuffle.value) rebuildShuffleOrder(index)
 
             tracks.getOrNull(index)?.let { track ->
