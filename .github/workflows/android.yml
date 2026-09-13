@@ -1,0 +1,89 @@
+name: Android
+
+# The release APK is the artifact this project is judged from: a debug build is
+# JIT-only with Compose debug instrumentation on, so it runs several times slower
+# and "it lags" is not a code problem until reproduced on release. CI therefore
+# gates on the release variant, and `testDebugUnitTest` is what compiles the
+# debug variant's Kotlin as a side effect.
+#
+# `assembleRelease` is finalised by `verifyReleaseDex` (app/build.gradle), so the
+# R8/reflection check runs automatically and fails the job. There is no emulator
+# anywhere in this project, so that check is the only automated defence against
+# Gson silently losing persisted fields.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A superseded run on the same ref has nothing useful to say.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test + verified release build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # JetBrains, not Temurin, and that is deliberate. AGP 8.13.2 / Kotlin 1.9.22
+      # target JDK 17 (app/build.gradle), but gradle/gradle-daemon-jvm.properties
+      # also pins the *daemon* JVM criteria to toolchainVendor=JETBRAINS,
+      # toolchainVersion=17. Given any other vendor Gradle finds no local match
+      # and silently auto-provisions a JetBrains JDK over the network via the
+      # foojay URLs in that file -- slower, and a new failure mode if foojay is
+      # unavailable. Installing the matching vendor means no download at all.
+      - name: Set up JDK 17 (JetBrains Runtime)
+        uses: actions/setup-java@v4
+        with:
+          distribution: jetbrains
+          java-version: '17'
+
+      # local.properties is gitignored, so the SDK is located via ANDROID_HOME /
+      # ANDROID_SDK_ROOT, which this action exports and licenses.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # No `clean`: the checkout is already clean, and this task is pointlessly
+      # slow here anyway (a measured ~5 files/sec on the dev machine).
+      #
+      # `testDebugUnitTest` -> 68 JVM tests, and it compiles the debug variant.
+      # `assembleRelease`   -> R8 + lintVital + signing, then verifyReleaseDex.
+      - name: Test and build verified release
+        run: ./gradlew testDebugUnitTest assembleRelease --console=plain
+
+      # The keystore is the repo's committed debug.keystore, deliberately: it is
+      # what makes the release APK installable over an existing install. That
+      # also means this APK is not a distributable production artifact.
+      - name: Upload release APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Elara-release-${{ github.sha }}
+          path: app/build/outputs/apk/release/Elara.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.sha }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

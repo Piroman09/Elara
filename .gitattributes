@@ -1,0 +1,40 @@
+# Line endings are pinned here instead of being left to whatever core.autocrlf
+# each machine happens to have, because this repo ships a POSIX shell script
+# (`gradlew`) that Linux CI executes directly. If it is ever checked out with
+# CRLF, the job dies with a "bad interpreter" error that reads like a Gradle
+# problem. On the machine this was added, core.autocrlf=true came from a
+# PortableGit system config — i.e. nothing in this repo guaranteed LF at all.
+#
+# Nothing currently in the repo is stored with CRLF, so adding this file changes
+# no existing content and produces no phantom diff.
+#
+# Deliberately NOT a blanket `* text=auto`: most of this repo's tracked files are
+# node_modules, and re-classifying those risks a large spurious diff for no gain.
+
+# POSIX shell scripts — the CI entry point.
+gradlew    text eol=lf
+*.sh       text eol=lf
+
+# Windows launchers.
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+
+# Binaries — never convert, never diff as text.
+*.jar      binary
+*.keystore binary
+*.jks      binary
+*.apk      binary
+*.aab      binary
+*.dex      binary
+*.flat     binary
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.webp     binary
+*.gif      binary
+*.ico      binary
+*.ttf      binary
+*.otf      binary
+*.woff     binary
+*.woff2    binary
+*.mp3      binary
