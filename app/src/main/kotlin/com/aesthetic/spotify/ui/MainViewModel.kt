@@ -38,7 +38,8 @@ import kotlinx.coroutines.withContext
 
 @OptIn(FlowPreview::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val repository = MusicRepository()
+    private val repository =
+        StartupTiming.measure("MusicRepository.init") { MusicRepository() }
     private val playbackManager = PlaybackManager.getInstance(application)
     private val downloadManager = DownloadManager.getInstance(application)
     private val playlistManager = PlaylistManager.getInstance(application)

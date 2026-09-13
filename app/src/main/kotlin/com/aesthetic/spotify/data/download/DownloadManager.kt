@@ -74,17 +74,22 @@ class DownloadManager private constructor(private val context: Context) {
     private val systemDm =
         context.getSystemService(Context.DOWNLOAD_SERVICE) as? android.app.DownloadManager
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .addInterceptor { chain ->
-            chain.proceed(
-                chain.request().newBuilder()
-                    .header("User-Agent", UA)
-                    .build()
-            )
-        }
-        .build()
+    // Not shared with RetrofitClient's client on purpose: these timeouts are
+    // longer, because a download is a large transfer rather than an API call.
+    // It is still built on the main thread at construction, hence the timing.
+    private val client = StartupTiming.measure("DownloadManager.okHttp") {
+        OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header("User-Agent", UA)
+                        .build()
+                )
+            }
+            .build()
+    }
 
     private val _entries =
         MutableStateFlow<List<Entry>>(StartupTiming.measure("DownloadManager.loadIndex") { loadIndex() })

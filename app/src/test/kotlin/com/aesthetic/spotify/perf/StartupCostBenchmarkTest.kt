@@ -2,12 +2,20 @@ package com.aesthetic.spotify.perf
 
 import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
+import com.aesthetic.spotify.data.network.JioSaavnApi
+import com.aesthetic.spotify.data.network.LyricsApi
+import com.aesthetic.spotify.data.network.MusicApi
+import com.aesthetic.spotify.data.network.SoundCloudApi
 import com.aesthetic.spotify.data.playlist.Playlist
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import java.util.concurrent.TimeUnit
 
 /**
  * How much of the cold start is Gson, measured rather than assumed?
@@ -179,6 +187,63 @@ class StartupCostBenchmarkTest {
         assertEquals("track-0", parsed.first().tracks.first().id)
         assertEquals(listOf("tag0", "tag0"), parsed.first().tracks.first().tags)
         assertTrue(sink > 0)
+    }
+
+    /**
+     * The startup cost the original audit never counted: network client
+     * construction.
+     *
+     * `MusicRepository`'s default constructor arguments touch all four
+     * `RetrofitClient` APIs. Each of those is a `by lazy` that builds its **own**
+     * `OkHttpClient` *and* its own `Retrofit`, and `MusicRepository` is a field
+     * initializer on `MainViewModel` — so this happens on the main thread before
+     * the first frame. `DownloadManager` adds a fifth client.
+     *
+     * This is measured rather than assumed, because the intuition could easily
+     * be wrong: the expensive part of the first `OkHttpClient` is the one-time
+     * `Platform.get()` service-loader scan, and subsequent clients may be cheap.
+     */
+    @Test
+    fun `report network client construction cost`() {
+        fun buildClient() = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor { chain -> chain.proceed(chain.request()) }
+            .build()
+
+        fun buildRetrofit(iface: Class<*>) = Retrofit.Builder()
+            .baseUrl("https://example.invalid/")
+            .addConverterFactory(GsonConverterFactory.create(safe))
+            .client(buildClient())
+            .build()
+            .create(iface)
+            .hashCode()
+
+        println()
+        println("Network client construction — JVM, not ART; shape is the signal, not the absolute")
+        println(String.format("%-40s %-9s %-9s", "what", "first", "median"))
+        fun line(label: String, pair: Pair<Long, Long>) =
+            println(String.format("%-40s %-9d %-9d", label, pair.first, pair.second))
+
+        line("1x OkHttpClient.build()", timed(20) { buildClient().hashCode() })
+        line("4x OkHttpClient.build()", timed(5) {
+            var acc = 0
+            repeat(4) { acc += buildClient().hashCode() }
+            acc
+        })
+        line("1x Retrofit + create()", timed(10) { buildRetrofit(MusicApi::class.java) })
+        line("4x Retrofit + create()  <- startup path", timed(3) {
+            var acc = 0
+            listOf(
+                MusicApi::class.java,
+                LyricsApi::class.java,
+                SoundCloudApi::class.java,
+                JioSaavnApi::class.java
+            ).forEach { acc += buildRetrofit(it) }
+            acc
+        })
+        println()
+        println("(checksum $sink)")
     }
 
     private companion object {
