@@ -32,7 +32,29 @@ import android.content.Context
 object StartupTiming {
 
     private val entries = mutableListOf<Pair<String, Long>>()
-    private val processStartNanos = System.nanoTime()
+
+    /**
+     * Fallback reference: when this object was first touched.
+     *
+     * This is *not* a good denominator on its own. `object` initialization is lazy,
+     * so it happens at the first [measure] call — part-way through `MainViewModel`
+     * construction, long after the process started. Reporting elapsed time against
+     * it silently understates startup and makes the timed loads look like a much
+     * larger share of it than they are.
+     */
+    private val objectInitNanos = System.nanoTime()
+
+    /** Reference point for the elapsed figure in [flush]. Set by [start]. */
+    @Volatile private var referenceNanos = 0L
+
+    /**
+     * Records the startup reference point. Call once, from `Application.onCreate`,
+     * which is the earliest code this app controls. Without it the elapsed figure
+     * falls back to [objectInitNanos] and is labelled accordingly.
+     */
+    fun start() {
+        referenceNanos = System.nanoTime()
+    }
 
     /** Times [block], recording the label even when the block throws. */
     inline fun <T> measure(label: String, block: () -> T): T {
@@ -61,12 +83,20 @@ object StartupTiming {
         if (snapshot.isEmpty()) return
 
         val totalMs = snapshot.sumOf { it.second }
-        val sinceProcessStartMs = (System.nanoTime() - processStartNanos) / 1_000_000
+        val reference = referenceNanos
+        // Labelled for what it actually measures — "since process start" would be
+        // wrong, and would flatter the loads by shrinking the denominator.
+        val elapsed = if (reference != 0L) {
+            "${(System.nanoTime() - reference) / 1_000_000}ms since Application.onCreate"
+        } else {
+            "${(System.nanoTime() - objectInitNanos) / 1_000_000}ms since first timed op " +
+                "(StartupTiming.start() was never called)"
+        }
         val detail = snapshot.joinToString(" ") { "${it.first}=${it.second}ms" }
         PlaybackDiagnostics.append(
             context,
             "startup: ${totalMs}ms on the main thread across ${snapshot.size} loads " +
-                "(${sinceProcessStartMs}ms since process start) | $detail"
+                "($elapsed) | $detail"
         )
     }
 }

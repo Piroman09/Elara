@@ -5,6 +5,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
+import com.aesthetic.spotify.data.diagnostics.StartupTiming
 
 /**
  * Process-wide app class. Its only job is to install a shared Coil
@@ -24,6 +25,14 @@ import coil.memory.MemoryCache
  * while scrolling.
  */
 class AuraSonicApp : Application(), ImageLoaderFactory {
+
+    override fun onCreate() {
+        super.onCreate()
+        // Earliest code this app controls, so it is the only honest reference
+        // point for "how long did startup take". Deliberately nothing else: this
+        // runs before the first frame and must stay free.
+        StartupTiming.start()
+    }
 
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .crossfade(CROSSFADE_MS)
