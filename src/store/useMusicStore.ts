@@ -19,6 +19,8 @@ const STORAGE_KEY_LIKED_TRACKS = 'aurasonic_liked_tracks_v2';
 const STORAGE_KEY_PLAYLISTS = 'aurasonic_custom_playlists_v2';
 const STORAGE_KEY_THEME = 'aurasonic_theme_v2';
 const STORAGE_KEY_DOWNLOADS = 'aurasonic_downloads_v2';
+const STORAGE_KEY_QUEUE = 'aurasonic_queue_v1';
+const STORAGE_KEY_PREFS = 'aurasonic_playback_prefs_v1';
 
 function getStoredUser(): AppUser | null {
   try {
@@ -95,6 +97,111 @@ function getStoredDownloads(): DownloadedTrack[] {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Queue helpers
+ *
+ * The queue is the full ordered playback list and `queueIndex` points at
+ * the track that is currently playing. Tracks before the cursor are
+ * "already played" (reachable via Previous), tracks after it are upcoming.
+ * ------------------------------------------------------------------ */
+
+type RepeatMode = 'off' | 'all' | 'one';
+
+/** Blob URLs (imported local files) are dead after a reload, so never persist them. */
+function isPersistableTrack(track: Track): boolean {
+  return !track.isLocal && !track.audioUrl?.startsWith('blob:');
+}
+
+function getStoredQueue(): { queue: Track[]; queueIndex: number } {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_QUEUE);
+    if (!raw) return { queue: [], queueIndex: -1 };
+    const parsed = JSON.parse(raw);
+    const queue: Track[] = Array.isArray(parsed?.queue)
+      ? parsed.queue.filter(isPersistableTrack)
+      : [];
+    let queueIndex = typeof parsed?.queueIndex === 'number' ? parsed.queueIndex : -1;
+    if (queueIndex >= queue.length) queueIndex = queue.length - 1;
+    return { queue, queueIndex };
+  } catch {
+    return { queue: [], queueIndex: -1 };
+  }
+}
+
+function persistQueue(queue: Track[], queueIndex: number) {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY_QUEUE,
+      JSON.stringify({ queue: queue.filter(isPersistableTrack), queueIndex })
+    );
+  } catch {}
+}
+
+interface PlaybackPrefs {
+  volume: number;
+  isShuffle: boolean;
+  repeatMode: RepeatMode;
+}
+
+function getStoredPrefs(): PlaybackPrefs {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PREFS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const modes: RepeatMode[] = ['off', 'all', 'one'];
+      return {
+        volume: typeof parsed?.volume === 'number' ? Math.max(0, Math.min(1, parsed.volume)) : 0.8,
+        isShuffle: !!parsed?.isShuffle,
+        repeatMode: modes.includes(parsed?.repeatMode) ? parsed.repeatMode : 'all'
+      };
+    }
+  } catch {}
+  return { volume: 0.8, isShuffle: false, repeatMode: 'all' };
+}
+
+function persistPrefs(volume: number, isShuffle: boolean, repeatMode: RepeatMode) {
+  try {
+    localStorage.setItem(STORAGE_KEY_PREFS, JSON.stringify({ volume, isShuffle, repeatMode }));
+  } catch {}
+}
+
+/** Fisher-Yates shuffle of every index except `startIndex`, which is pinned first. */
+function createShuffleOrder(length: number, startIndex: number): number[] {
+  const rest: number[] = [];
+  for (let i = 0; i < length; i++) {
+    if (i !== startIndex) rest.push(i);
+  }
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  return startIndex >= 0 && startIndex < length ? [startIndex, ...rest] : rest;
+}
+
+/** Rebuild the shuffle order around a (possibly new) current index. */
+function buildShuffleState(queueLength: number, queueIndex: number, isShuffle: boolean) {
+  if (!isShuffle || queueIndex < 0 || queueLength === 0) {
+    return { shuffleOrder: [] as number[], shufflePos: 0 };
+  }
+  return { shuffleOrder: createShuffleOrder(queueLength, queueIndex), shufflePos: 0 };
+}
+
+/**
+ * Drop a freshly appended index into the *unplayed* tail of the shuffle order
+ * so that adding a track doesn't reset the user's shuffle progress.
+ */
+function insertIntoShuffleTail(
+  shuffleOrder: number[],
+  shufflePos: number,
+  newIndex: number
+): number[] {
+  const order = [...shuffleOrder];
+  const minPos = Math.min(shufflePos + 1, order.length);
+  const insertAt = minPos + Math.floor(Math.random() * Math.max(1, order.length - minPos + 1));
+  order.splice(Math.min(insertAt, order.length), 0, newIndex);
+  return order;
+}
+
 interface MusicStoreState {
   currentTrack: Track | null;
   isPlaying: boolean;
@@ -105,6 +212,10 @@ interface MusicStoreState {
   isShuffle: boolean;
   repeatMode: 'off' | 'all' | 'one';
   queue: Track[];
+  queueIndex: number;
+  shuffleOrder: number[];
+  shufflePos: number;
+  queueSource: string | null;
   history: Track[];
   recentTracks: Track[];
   galaxyTracks: Track[];
@@ -149,7 +260,8 @@ interface MusicStoreState {
 
   // Actions
   init: () => void;
-  playTrack: (track: Track, newQueue?: Track[]) => void;
+  playTrack: (track: Track, newQueue?: Track[], source?: string) => void;
+  jumpToQueueIndex: (index: number) => void;
   togglePlay: () => void;
   pauseTrack: () => void;
   resumeTrack: () => void;
@@ -162,6 +274,8 @@ interface MusicStoreState {
   toggleRepeat: () => void;
   toggleLikeTrack: (track: Track | string) => void;
   addToQueue: (track: Track) => void;
+  playNext: (track: Track) => void;
+  moveInQueue: (from: number, to: number) => void;
   removeFromQueue: (index: number) => void;
   clearQueue: () => void;
   setActiveView: (view: ViewType, params?: { playlistId?: string; playlistData?: Playlist; artistId?: string; genreId?: string }) => void;
@@ -207,21 +321,103 @@ interface MusicStoreState {
   refreshGalaxyTracks: () => Promise<void>;
 }
 
+type StoreSet = (
+  partial: Partial<MusicStoreState> | ((state: MusicStoreState) => Partial<MusicStoreState>)
+) => void;
+type StoreGet = () => MusicStoreState;
+
+/**
+ * Single entry point for "a track is now the current track".
+ * Handles history, recents, offline-MP4 resolution, audio loading and lyric
+ * fetching so every queue transition behaves identically.
+ */
+async function startPlayback(
+  set: StoreSet,
+  get: StoreGet,
+  track: Track,
+  patch: Partial<MusicStoreState>
+) {
+  const { currentTrack, history, recentTracks } = get();
+
+  const updatedHistory =
+    currentTrack && currentTrack.id !== track.id
+      ? [currentTrack, ...history.filter(t => t.id !== currentTrack.id)].slice(0, 50)
+      : history;
+
+  const updatedRecent = [track, ...recentTracks.filter(t => t.id !== track.id)].slice(0, 10);
+
+  // Prefer a cached offline MP4 when one exists
+  const offlineUrl = await offlineStorage.getMP4PlaybackUrl(track.id);
+  const playbackSource: 'network' | 'offline-mp4' | 'local' = offlineUrl
+    ? 'offline-mp4'
+    : track.isLocal
+      ? 'local'
+      : 'network';
+
+  set({
+    currentTrack: { ...track, offlineAvailable: !!offlineUrl },
+    isPlaying: true,
+    currentTime: 0,
+    duration: track.duration,
+    history: updatedHistory,
+    recentTracks: updatedRecent,
+    activePlaybackSource: playbackSource,
+    ...patch
+  });
+
+  audioEngine.loadTrack(offlineUrl || track.audioUrl, true);
+
+  // Auto-fetch lyrics for YouTube Music tracks if not yet loaded
+  if (track.id.startsWith('yt-') && (!track.lyrics || track.lyrics.length === 0) && navigator.onLine) {
+    YTMusicService.getLyrics(track.id).then(lyrics => {
+      if (lyrics && lyrics.length > 0) {
+        set(state =>
+          state.currentTrack?.id === track.id
+            ? { currentTrack: { ...state.currentTrack, lyrics } }
+            : {}
+        );
+      }
+    });
+  }
+}
+
 let sleepTimerInterval: any = null;
 let searchDebounceTimeout: any = null;
 
 const initialLiked = getStoredLikedTracks();
+const initialPrefs = getStoredPrefs();
+
+const DEFAULT_QUEUE: Track[] = [
+  MOCK_TRACKS[0],
+  MOCK_TRACKS[1],
+  MOCK_TRACKS[2],
+  MOCK_TRACKS[3],
+  MOCK_TRACKS[4],
+  MOCK_TRACKS[5]
+].filter(Boolean);
+
+const storedQueueState = getStoredQueue();
+const initialQueue = storedQueueState.queue.length > 0 ? storedQueueState.queue : DEFAULT_QUEUE;
+const initialQueueIndex = storedQueueState.queue.length > 0 ? storedQueueState.queueIndex : 0;
+const initialShuffleState = buildShuffleState(
+  initialQueue.length,
+  initialQueueIndex,
+  initialPrefs.isShuffle
+);
 
 export const useMusicStore = create<MusicStoreState>((set, get) => ({
-  currentTrack: MOCK_TRACKS[0],
+  currentTrack: initialQueue[initialQueueIndex] || MOCK_TRACKS[0],
   isPlaying: false,
   currentTime: 0,
-  duration: MOCK_TRACKS[0].duration,
-  volume: 0.8,
-  isMuted: false,
-  isShuffle: false,
-  repeatMode: 'all',
-  queue: [MOCK_TRACKS[1], MOCK_TRACKS[2], MOCK_TRACKS[3], MOCK_TRACKS[4], MOCK_TRACKS[5]],
+  duration: (initialQueue[initialQueueIndex] || MOCK_TRACKS[0]).duration,
+  volume: initialPrefs.volume,
+  isMuted: initialPrefs.volume === 0,
+  isShuffle: initialPrefs.isShuffle,
+  repeatMode: initialPrefs.repeatMode,
+  queue: initialQueue,
+  queueIndex: initialQueueIndex,
+  ...initialShuffleState,
+  queueSource: null,
   history: [],
   recentTracks: [MOCK_TRACKS[0], MOCK_TRACKS[1], MOCK_TRACKS[2]],
   galaxyTracks: MOCK_TRACKS,
@@ -430,56 +626,67 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
     set({ currentTheme: theme });
   },
 
-  playTrack: async (track: Track, newQueue?: Track[]) => {
-    const { currentTrack, history, recentTracks } = get();
-    
-    let updatedHistory = history;
-    if (currentTrack && currentTrack.id !== track.id) {
-      updatedHistory = [currentTrack, ...history.slice(0, 19)];
+  playTrack: async (track: Track, newQueue?: Track[], source?: string) => {
+    const { queue, isShuffle, queueSource } = get();
+
+    let nextQueue: Track[];
+    let nextIndex: number;
+    let nextSource: string | null;
+
+    if (newQueue && newQueue.length > 0) {
+      // A new playback context was supplied — adopt it wholesale. Tracks that
+      // came before the clicked one stay reachable through Previous.
+      nextQueue = newQueue;
+      nextIndex = nextQueue.findIndex(t => t.id === track.id);
+      if (nextIndex === -1) {
+        nextQueue = [track, ...newQueue];
+        nextIndex = 0;
+      }
+      nextSource = source ?? null;
+    } else {
+      // No context: jump to the track if it is already queued, otherwise append
+      // it so it still has a defined place in the running order.
+      const existing = queue.findIndex(t => t.id === track.id);
+      if (existing >= 0) {
+        nextQueue = queue;
+        nextIndex = existing;
+      } else {
+        nextQueue = [...queue, track];
+        nextIndex = nextQueue.length - 1;
+      }
+      nextSource = queueSource;
     }
 
-    const filteredRecent = recentTracks.filter(t => t.id !== track.id);
-    const updatedRecent = [track, ...filteredRecent].slice(0, 10);
-
-    let updatedQueue = get().queue;
-    if (newQueue) {
-      updatedQueue = newQueue.filter(t => t.id !== track.id);
-    }
-
-    // Check if offline MP4 is cached in IndexedDB
-    const offlineUrl = await offlineStorage.getMP4PlaybackUrl(track.id);
-    const playbackSource: 'network' | 'offline-mp4' | 'local' = offlineUrl 
-      ? 'offline-mp4' 
-      : (track.isLocal ? 'local' : 'network');
-
-    const effectiveAudioUrl = offlineUrl || track.audioUrl;
-
-    set({
-      currentTrack: { ...track, offlineAvailable: !!offlineUrl },
-      isPlaying: true,
-      currentTime: 0,
-      duration: track.duration,
-      history: updatedHistory,
-      recentTracks: updatedRecent,
-      queue: updatedQueue,
-      activePlaybackSource: playbackSource
+    await startPlayback(set, get, track, {
+      queue: nextQueue,
+      queueIndex: nextIndex,
+      queueSource: nextSource,
+      ...buildShuffleState(nextQueue.length, nextIndex, isShuffle)
     });
+  },
 
-    audioEngine.loadTrack(effectiveAudioUrl, true);
+  jumpToQueueIndex: (index: number) => {
+    const { queue, queueIndex, isShuffle, shuffleOrder, isPlaying } = get();
+    const track = queue[index];
+    if (!track) return;
 
-    // Auto-fetch lyrics for YouTube Music tracks if not yet loaded (and network available)
-    if (track.id.startsWith('yt-') && (!track.lyrics || track.lyrics.length === 0) && navigator.onLine) {
-      YTMusicService.getLyrics(track.id).then(lyrics => {
-        if (lyrics && lyrics.length > 0) {
-          set(state => {
-            if (state.currentTrack?.id === track.id) {
-              return { currentTrack: { ...state.currentTrack, lyrics } };
-            }
-            return state;
-          });
-        }
-      });
+    if (index === queueIndex) {
+      if (!isPlaying) {
+        audioEngine.play();
+        set({ isPlaying: true });
+      }
+      return;
     }
+
+    let shufflePatch: Partial<MusicStoreState> = {};
+    if (isShuffle && shuffleOrder.length > 0) {
+      const pos = shuffleOrder.indexOf(index);
+      shufflePatch = pos >= 0
+        ? { shufflePos: pos }
+        : buildShuffleState(queue.length, index, true);
+    }
+
+    void startPlayback(set, get, track, { queueIndex: index, ...shufflePatch });
   },
 
   togglePlay: () => {
@@ -511,62 +718,104 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
   },
 
   nextTrack: () => {
-    const { queue, isShuffle, repeatMode, currentTrack, galaxyTracks } = get();
+    const {
+      queue,
+      queueIndex,
+      isShuffle,
+      shuffleOrder,
+      shufflePos,
+      repeatMode,
+      currentTrack,
+      galaxyTracks
+    } = get();
 
+    // Nothing queued — keep the "endless radio" behaviour while repeating.
     if (queue.length === 0) {
-      if (repeatMode === 'all' && currentTrack) {
-        const pool = galaxyTracks.filter(t => t.id !== currentTrack.id);
-        const next = pool[0];
-        if (next) {
-          get().playTrack(next, pool.slice(1));
-        }
+      if (repeatMode !== 'off' && currentTrack) {
+        const pool = (galaxyTracks.length > 0 ? galaxyTracks : MOCK_TRACKS).filter(
+          t => t.id !== currentTrack.id
+        );
+        if (pool.length > 0) get().playTrack(pool[0], pool, 'Auto radio');
       } else {
         set({ isPlaying: false });
       }
       return;
     }
 
-    let nextTrack: Track;
-    let nextQueue: Track[];
+    let target = -1;
 
-    if (isShuffle) {
-      const randomIndex = Math.floor(Math.random() * queue.length);
-      nextTrack = queue[randomIndex];
-      nextQueue = queue.filter((_, idx) => idx !== randomIndex);
-    } else {
-      nextTrack = queue[0];
-      nextQueue = queue.slice(1);
+    if (isShuffle && shuffleOrder.length > 0) {
+      if (shufflePos + 1 < shuffleOrder.length) {
+        target = shuffleOrder[shufflePos + 1];
+      } else if (repeatMode === 'all') {
+        // Reshuffle for the next lap, avoiding an immediate repeat of the last track.
+        const order = createShuffleOrder(queue.length, queueIndex);
+        if (order.length > 1) {
+          set({ shuffleOrder: order, shufflePos: 1 });
+          target = order[1];
+        }
+      }
+    } else if (queueIndex >= 0 && queueIndex + 1 < queue.length) {
+      target = queueIndex + 1;
+    } else if (queueIndex < 0) {
+      target = 0;
+    } else if (repeatMode === 'all') {
+      target = 0;
     }
 
-    get().playTrack(nextTrack, nextQueue);
+    if (target >= 0 && queue[target]) {
+      get().jumpToQueueIndex(target);
+      return;
+    }
+
+    set({ isPlaying: false });
   },
 
   prevTrack: () => {
-    const { currentTime, history, currentTrack } = get();
-    
+    const {
+      currentTime,
+      queue,
+      queueIndex,
+      history,
+      isShuffle,
+      shuffleOrder,
+      shufflePos
+    } = get();
+
+    // Restart the track first, like every other player does.
     if (currentTime > 3) {
       audioEngine.seek(0);
       set({ currentTime: 0 });
       return;
     }
 
-    if (history.length > 0) {
-      const prevTrack = history[0];
-      const nextHistory = history.slice(1);
-      const nextQueue = currentTrack ? [currentTrack, ...get().queue] : get().queue;
-
-      set({
-        currentTrack: prevTrack,
-        history: nextHistory,
-        queue: nextQueue,
-        currentTime: 0,
-        isPlaying: true
-      });
-      audioEngine.loadTrack(prevTrack.audioUrl, true);
-    } else {
-      audioEngine.seek(0);
-      set({ currentTime: 0 });
+    if (isShuffle && shufflePos > 0) {
+      const target = shuffleOrder[shufflePos - 1];
+      if (queue[target]) {
+        get().jumpToQueueIndex(target);
+        return;
+      }
     }
+
+    if (queueIndex > 0 && queue[queueIndex - 1]) {
+      get().jumpToQueueIndex(queueIndex - 1);
+      return;
+    }
+
+    // Fall back to history for tracks that were played outside the queue.
+    const previous = history[0];
+    if (previous) {
+      void startPlayback(set, get, previous, {
+        queueIndex: -1,
+        history: history.slice(1),
+        shuffleOrder: [],
+        shufflePos: 0
+      });
+      return;
+    }
+
+    audioEngine.seek(0);
+    set({ currentTime: 0 });
   },
 
   seek: (seconds: number) => {
@@ -593,7 +842,13 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
   },
 
   toggleShuffle: () => {
-    set(state => ({ isShuffle: !state.isShuffle }));
+    set(state => {
+      const isShuffle = !state.isShuffle;
+      return {
+        isShuffle,
+        ...buildShuffleState(state.queue.length, state.queueIndex, isShuffle)
+      };
+    });
   },
 
   toggleRepeat: () => {
@@ -654,19 +909,104 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
   },
 
   addToQueue: (track: Track) => {
-    set(state => ({
-      queue: [...state.queue, track]
-    }));
+    set(state => {
+      const queue = [...state.queue, track];
+      const shuffleOrder =
+        state.isShuffle && state.shuffleOrder.length > 0
+          ? insertIntoShuffleTail(state.shuffleOrder, state.shufflePos, queue.length - 1)
+          : state.shuffleOrder;
+      return { queue, shuffleOrder };
+    });
+  },
+
+  playNext: (track: Track) => {
+    set(state => {
+      const insertAt = state.queueIndex >= 0 ? state.queueIndex + 1 : state.queue.length;
+      const queue = [...state.queue.slice(0, insertAt), track, ...state.queue.slice(insertAt)];
+
+      let shuffleOrder = state.shuffleOrder;
+      let shufflePos = state.shufflePos;
+      if (state.isShuffle && shuffleOrder.length > 0) {
+        // Shift every index at or past the insertion point, then slot the new
+        // track in directly after the current shuffle position.
+        shuffleOrder = shuffleOrder.map(i => (i >= insertAt ? i + 1 : i));
+        shuffleOrder.splice(state.shufflePos + 1, 0, insertAt);
+      }
+
+      return { queue, shuffleOrder, shufflePos };
+    });
+  },
+
+  moveInQueue: (from: number, to: number) => {
+    set(state => {
+      const { queue, queueIndex } = state;
+      if (from === to) return {};
+      if (from < 0 || to < 0 || from >= queue.length || to >= queue.length) return {};
+
+      const nextQueue = [...queue];
+      const [moved] = nextQueue.splice(from, 1);
+      nextQueue.splice(to, 0, moved);
+
+      // Keep the cursor pointing at the same physical track.
+      let nextIndex = queueIndex;
+      if (queueIndex >= 0) {
+        if (queueIndex === from) nextIndex = to;
+        else if (from < queueIndex && to >= queueIndex) nextIndex = queueIndex - 1;
+        else if (from > queueIndex && to <= queueIndex) nextIndex = queueIndex + 1;
+      }
+
+      let shufflePatch: Partial<MusicStoreState> = {};
+      if (state.isShuffle && state.shuffleOrder.length > 0) {
+        const order = state.shuffleOrder.map(i => {
+          if (i === from) return to;
+          if (from < to) return i > from && i <= to ? i - 1 : i;
+          return i >= to && i < from ? i + 1 : i;
+        });
+        const pos = order.indexOf(nextIndex);
+        shufflePatch = { shuffleOrder: order, shufflePos: pos >= 0 ? pos : 0 };
+      }
+
+      return { queue: nextQueue, queueIndex: nextIndex, ...shufflePatch };
+    });
   },
 
   removeFromQueue: (index: number) => {
-    set(state => ({
-      queue: state.queue.filter((_, idx) => idx !== index)
-    }));
+    set(state => {
+      const { queue, queueIndex } = state;
+      if (index < 0 || index >= queue.length) return {};
+
+      const nextQueue = queue.filter((_, i) => i !== index);
+
+      // Removing the current track keeps it playing but detaches it from the queue.
+      let nextIndex = queueIndex;
+      if (index < queueIndex) nextIndex = queueIndex - 1;
+      else if (index === queueIndex) nextIndex = -1;
+
+      if (nextIndex < 0) {
+        return { queue: nextQueue, queueIndex: -1, shuffleOrder: [], shufflePos: 0 };
+      }
+
+      let shufflePatch: Partial<MusicStoreState> = {};
+      if (state.isShuffle && state.shuffleOrder.length > 0) {
+        const order = state.shuffleOrder
+          .filter(i => i !== index)
+          .map(i => (i > index ? i - 1 : i));
+        const pos = order.indexOf(nextIndex);
+        shufflePatch = { shuffleOrder: order, shufflePos: pos >= 0 ? pos : 0 };
+      }
+
+      return { queue: nextQueue, queueIndex: nextIndex, ...shufflePatch };
+    });
   },
 
   clearQueue: () => {
-    set({ queue: [] });
+    const { queue, queueIndex } = get();
+    // "Clear queue" drops what is coming up but never interrupts playback.
+    if (queueIndex >= 0 && queue[queueIndex]) {
+      set({ queue: [queue[queueIndex]], queueIndex: 0, shuffleOrder: [], shufflePos: 0 });
+    } else {
+      set({ queue: [], queueIndex: -1, shuffleOrder: [], shufflePos: 0 });
+    }
   },
 
   setActiveView: (view: ViewType, params) => {
@@ -1036,3 +1376,19 @@ export const useMusicStore = create<MusicStoreState>((set, get) => ({
     }
   }
 }));
+
+/* ------------------------------------------------------------------ *
+ * Persistence — the queue and playback preferences survive a reload.
+ * ------------------------------------------------------------------ */
+useMusicStore.subscribe((state, prevState) => {
+  if (state.queue !== prevState.queue || state.queueIndex !== prevState.queueIndex) {
+    persistQueue(state.queue, state.queueIndex);
+  }
+  if (
+    state.volume !== prevState.volume ||
+    state.isShuffle !== prevState.isShuffle ||
+    state.repeatMode !== prevState.repeatMode
+  ) {
+    persistPrefs(state.volume, state.isShuffle, state.repeatMode);
+  }
+});

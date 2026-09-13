@@ -3,6 +3,7 @@ package com.aesthetic.spotify.data.network
 import android.util.Log
 import com.aesthetic.spotify.data.model.MusicSource
 import com.aesthetic.spotify.data.model.Track
+import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -103,7 +104,8 @@ object YouTubeMusicApi {
                 )
             ) ?: return@runCatching null
 
-            val rootObj = JsonParser.parseString(root ?: return@runCatching null).asJsonObject
+            // `root` is already non-null here: the call above returns early.
+            val rootObj = JsonParser.parseString(root).asJsonObject
 
             val status = rootObj.get("playabilityStatus")
                 ?.takeIf { it.isJsonObject }?.asJsonObject
@@ -163,7 +165,12 @@ object YouTubeMusicApi {
         return out
     }
 
-    private fun parseListItem(item: com.google.gson.JsonObject): Track? {
+    /**
+     * Parses one `musicResponsiveListItemRenderer` row. `internal` (rather than
+     * private) so the artwork path can be unit-tested against a captured
+     * response without touching the network.
+     */
+    internal fun parseListItem(item: JsonObject): Track? {
         val videoId = item.getAsJsonObject("playlistItemData")
             ?.get("videoId")?.takeIf { !it.isJsonNull }?.asString
             ?: return null
@@ -196,16 +203,17 @@ object YouTubeMusicApi {
             ?.let { (it[0].toIntOrNull() ?: 0) * 60 + (it[1].toIntOrNull() ?: 0) }
             ?: 0
 
-        val artist = subtitleParts.firstOrNull().orEmpty().ifEmpty { "Unknown Artist" }
-        val album = subtitleParts.getOrNull(1)
-            ?.takeUnless { durationRegex.matches(it) || it.endsWith("views") }
+        // Whatever is left once the duration and view counts are dropped is the
+        // real metadata: artist first, album second. Song rows that omit the
+        // artist entirely ("Song • 5:52") leave nothing behind, and without this
+        // split the timestamp itself became the artist name.
+        val metadata = subtitleParts.filterNot {
+            durationRegex.matches(it) || it.endsWith("views")
+        }
+        val artist = metadata.firstOrNull() ?: "Unknown Artist"
+        val album = metadata.getOrNull(1)
 
-        val art = runCatching {
-            item.getAsJsonObject("thumbnail")
-                ?.getAsJsonArray("thumbnails")
-                ?.maxByOrNull { it.asJsonObject.get("width")?.asInt ?: 0 }
-                ?.asJsonObject?.get("url")?.asString
-        }.getOrNull() ?: ""
+        val art = artworkFor(item, videoId)
 
         return Track(
             id = videoId,
@@ -221,7 +229,7 @@ object YouTubeMusicApi {
     }
 
     /** Song-shelf rows carry the duration in a fixed column rather than the subtitle. */
-    private fun fixedColumnText(item: com.google.gson.JsonObject): String? = runCatching {
+    private fun fixedColumnText(item: JsonObject): String? = runCatching {
         item.getAsJsonArray("fixedColumns")
             ?.firstOrNull()?.asJsonObject
             ?.getAsJsonObject("musicResponsiveListItemFixedColumnRenderer")
@@ -229,6 +237,58 @@ object YouTubeMusicApi {
             ?.getAsJsonArray("runs")
             ?.joinToString("") { it.asJsonObject.get("text")?.asString ?: "" }
     }.getOrNull()
+
+    // ── Artwork ──────────────────────────────────────────────────────────
+
+    /** `=w60-h60-l90-rj` sizing suffix YouTube appends to its CDN artwork. */
+    private val thumbnailSizeSuffix = Regex("=w\\d+-h\\d+")
+
+    /**
+     * Cover art for a search row.
+     *
+     * The renderer nests the image two levels down —
+     * `thumbnail.musicThumbnailRenderer.thumbnail.thumbnails[]` — so the
+     * plausible-looking `thumbnail.thumbnails[]` silently resolves to nothing
+     * for every YouTube Music result and left the whole app with blank covers.
+     * The URLs also carry a `=w60-h60` sizing suffix, which is a 60px list-row
+     * thumbnail rather than something worth showing full-screen, so ask the CDN
+     * for a bigger one.
+     */
+    internal fun artworkFor(item: JsonObject, videoId: String): String {
+        val best = runCatching {
+            item.getAsJsonObject("thumbnail")
+                ?.getAsJsonObject("musicThumbnailRenderer")
+                ?.getAsJsonObject("thumbnail")
+                ?.getAsJsonArray("thumbnails")
+                ?.mapNotNull { el ->
+                    val obj = el.asJsonObject
+                    val url = obj.get("url")?.takeIf { !it.isJsonNull }?.asString
+                    if (url.isNullOrBlank()) null else (obj.get("width")?.asInt ?: 0) to url
+                }
+                ?.maxByOrNull { it.first }
+                ?.second
+        }.getOrNull()
+
+        best?.let { return upscaleArtwork(it) }
+
+        // Last resort: the video's own still, which exists for any videoId that
+        // YouTube Music can hand back.
+        return "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+    }
+
+    /**
+     * Rewrites the CDN sizing suffix so the image is large enough for the
+     * full-screen player. Anything without a recognisable suffix (and any
+     * protocol-relative URL) is returned usable but otherwise untouched.
+     */
+    internal fun upscaleArtwork(url: String): String {
+        val absolute = if (url.startsWith("//")) "https:$url" else url
+        return if (thumbnailSizeSuffix.containsMatchIn(absolute)) {
+            thumbnailSizeSuffix.replaceFirst(absolute, "=w544-h544")
+        } else {
+            absolute
+        }
+    }
 
     // ── HTTP ─────────────────────────────────────────────────────────────
 

@@ -1,6 +1,76 @@
-# Keep Gson-deserialized API models (fields accessed reflectively).
+# ---------------------------------------------------------------------------
+# ELARA — R8 keep rules
+#
+# The app leans on reflection in two places, and both fail *silently* when
+# minified, which is why this file is more specific than it looks:
+#
+#   1. Gson maps JSON keys onto **field names**. A renamed or stripped field
+#      does not throw — it deserialises to null / 0 and the app just quietly
+#      loses data. Every Gson-touched type therefore needs `{ *; }`.
+#   2. Retrofit reads its annotations and generic return types at runtime.
+#      Without the attribute rules below it cannot resolve an endpoint at all.
+#
+# Obfuscation is disabled outright (see the bottom of this file) so that
+# renaming cannot be the cause of either failure. Shrinking and optimisation
+# still run, which is where the startup and frame-time wins come from.
+# ---------------------------------------------------------------------------
+
+# --- Gson: deserialised API models (fields accessed reflectively) -----------
 -keep class com.aesthetic.spotify.data.network.** { *; }
 -keep class com.aesthetic.spotify.data.model.** { *; }
 
-# Media3 / ExoPlayer
+# --- Gson: serialised, but living outside data.model ------------------------
+# Found by auditing every `fromJson` call site. Each of these is persisted to
+# disk and read back, so losing a field loses the user's data:
+#   PlaylistManager -> List<Playlist>
+#   DownloadManager -> List<Entry>, List<Pending>
+-keep class com.aesthetic.spotify.data.playlist.Playlist { *; }
+-keep class com.aesthetic.spotify.data.download.DownloadManager$Entry { *; }
+-keep class com.aesthetic.spotify.data.download.DownloadManager$Pending { *; }
+
+# --- Gson: generic type resolution -----------------------------------------
+# `object : TypeToken<List<Track>>() {}.type` is resolved from the anonymous
+# class's generic superclass signature. Strip the attribute and Gson can no
+# longer see the element type — it hands back LinkedTreeMap instead of Track,
+# and the failure surfaces as a ClassCastException far from the real cause.
+-keepattributes Signature
+-keepattributes InnerClasses, EnclosingMethod
+
+# --- Retrofit --------------------------------------------------------------
+-keepattributes RuntimeVisibleAnnotations
+-keepattributes RuntimeVisibleParameterAnnotations
+-keepattributes AnnotationDefault
+-keepattributes *Annotation*
+
+-keepclassmembers,allowshrinking,allowobfuscation interface * {
+    @retrofit2.http.* <methods>;
+}
+-keep,allowobfuscation,allowshrinking class retrofit2.Response
+-keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
+
+-dontwarn retrofit2.**
+-dontwarn javax.annotation.**
+
+# --- Optional platform backends that are simply absent at runtime -----------
+# These warnings are noise: OkHttp/Conscrypt/BouncyCastle probe for providers
+# and degrade gracefully when they are missing.
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
+
+# --- Media3 / ExoPlayer ----------------------------------------------------
 -dontwarn androidx.media3.**
+
+# --- Coil ------------------------------------------------------------------
+-dontwarn coil.**
+
+# --- Kotlin coroutines internals -------------------------------------------
+-dontwarn kotlinx.coroutines.**
+
+# --- Do not rename anything ------------------------------------------------
+# Optimisation and shrinking stay on; only the renaming pass is skipped. That
+# costs a little APK size and buys immunity to the whole class of
+# reflection-by-name breakage described at the top of this file.
+-dontobfuscate

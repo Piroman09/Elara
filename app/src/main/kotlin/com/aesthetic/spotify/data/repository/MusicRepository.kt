@@ -1,6 +1,7 @@
 package com.aesthetic.spotify.data.repository
 
 import android.util.Log
+import com.aesthetic.spotify.data.lyrics.LyricQuery
 import com.aesthetic.spotify.data.model.LyricLine
 import com.aesthetic.spotify.data.model.MusicSource
 import com.aesthetic.spotify.data.model.Playlist
@@ -32,7 +33,23 @@ class MusicRepository(
 ) {
     companion object {
         private const val TAG = "MusicRepository"
-        private val ACCENTS = listOf("#8B5CF6", "#06B6D4", "#EC4899", "#F59E0B", "#10B981")
+        /**
+         * Per-track accent colours, as hex strings because [Track.accentColor]
+         * is persisted in JSON.
+         *
+         * These drive the full-screen player's glow, which makes them the
+         * single biggest reason the app did not read as purple: the palette was
+         * a rainbow — violet, cyan, pink, amber, emerald — so most tracks lit
+         * the player in a hue unrelated to the theme. All five are now violet,
+         * spread across the ramp so consecutive tracks still look distinct.
+         */
+        private val ACCENTS = listOf(
+            "#8B5CF6", // violet 500 — the app's primary
+            "#A78BFA", // violet 400
+            "#7C3AED", // violet 600
+            "#C084FC", // purple 400
+            "#6D28D9"  // violet 700
+        )
 
         /** Upscale Apple's 100x100 artwork to 600x600. */
         private fun hiRes(url: String?): String =
@@ -64,7 +81,7 @@ class MusicRepository(
             albumArt = "https://is1-ssl.mzstatic.com/image/thumb/Music126/v4/11/7a/b8/117ab805-6811-8929-18b9-0fad7baf0c25/17UMGIM98210.rgb.jpg/600x600bb.jpg",
             audioUrl = "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview221/v4/c0/3f/36/c03f367a-b66b-fd0a-a54c-30f8250c4410/mzaf_12768434238801682952.plus.aac.p.m4a",
             duration = 204,
-            accentColor = "#06B6D4"
+            accentColor = "#A78BFA"
         ),
         Track(
             id = "1538003843",
@@ -74,7 +91,7 @@ class MusicRepository(
             albumArt = "https://is1-ssl.mzstatic.com/image/thumb/Music116/v4/6c/11/d6/6c11d681-aa3a-d59e-4c2e-f77e181026ab/190295092665.jpg/600x600bb.jpg",
             audioUrl = "https://audio-ssl.itunes.apple.com/itunes-assets/AudioPreview211/v4/59/dc/4d/59dc4dda-93ff-8f1c-c536-f005f6ea6af5/mzaf_3066686759813252385.plus.aac.p.m4a",
             duration = 203,
-            accentColor = "#EC4899"
+            accentColor = "#7C3AED"
         )
     )
 
@@ -253,14 +270,17 @@ class MusicRepository(
 
     private fun jioSongToTrack(s: com.aesthetic.spotify.data.network.JioSong): Track? {
         val info = s.moreInfo ?: return null
-        val enc = info.encryptedMediaUrl ?: return null
+        // Guard only: a JioSaavn song without an encrypted media URL has no
+        // playable stream. Binding this to a name implied it was used below.
+        info.encryptedMediaUrl ?: return null
         return Track(
             id = s.id,
             title = decodeHtmlEntities(s.title),
             artist = decodeHtmlEntities(
                 s.subtitle
-                    ?.substringBefore(" - ")?.trim()
-                    ?.takeIf { it.isNotEmpty() } ?: "Unknown Artist"
+                    .substringBefore(" - ")
+                    .trim()
+                    .takeIf { it.isNotEmpty() } ?: "Unknown Artist"
             ),
             album = decodeHtmlEntities(info.album ?: "JioSaavn"),
             albumArt = JioSaavnCrypto.hiResArt(s.image),
@@ -461,7 +481,17 @@ class MusicRepository(
      */
     suspend fun getLyrics(track: Track): List<LyricLine> = coroutineScope {
         val lrcDeferred = async { runCatching { fetchFromLrcLib(track) }.getOrDefault(emptyList()) }
-        val mxDeferred = async { MusixmatchClient.getLyrics(track.title, track.artist) }
+
+        // Musixmatch resolves title+artist against its own catalogue, so it is
+        // defeated by the same YouTube Music packaging that breaks LRCLIB —
+        // hand it the normalised form too.
+        val mxQuery = LyricQuery.candidates(track.title, track.artist).firstOrNull()
+        val mxDeferred = async {
+            MusixmatchClient.getLyrics(
+                mxQuery?.title ?: track.title,
+                mxQuery?.artist ?: track.artist
+            )
+        }
 
         // Small head start for Musixmatch's synced lyrics.
         val mxEarly = withTimeoutOrNull(2_500) { mxDeferred.await() }
@@ -480,13 +510,52 @@ class MusicRepository(
     }
 
     private suspend fun fetchFromLrcLib(track: Track): List<LyricLine> {
-        val fromSearch = lyricsApi.searchLyrics(
-            trackName = track.title,
-            artistName = track.artist
-        ).firstNotNullOfOrNull { pickLyrics(it, track) }
-        if (!fromSearch.isNullOrEmpty()) return fromSearch
+        // Walk the normalised cascade from most to least specific and stop at
+        // the first query that yields anything. A single exact query is not
+        // enough for YouTube Music, whose rows carry the video's packaging —
+        // measured against the live API, `Kesariya` by `Arijit Singh & Nikhita
+        // Gandhi` and `Tum Hi Ho` by `T-Series` both returned zero rows, while
+        // the normalised form returned twenty.
+        val candidates = LyricQuery.candidates(track.title, track.artist)
 
-        return lyricsApi.searchLyricsFuzzy(q = "${track.title} ${track.artist}")
+        for (candidate in candidates) {
+            val results = runCatching {
+                lyricsApi.searchLyrics(
+                    trackName = candidate.title,
+                    artistName = candidate.artist
+                )
+            }.getOrDefault(emptyList())
+            if (results.isEmpty()) continue
+
+            // Rank before picking. The title-only step can surface a cover
+            // ahead of the original, and taking whichever row came first would
+            // show the wrong lyrics rather than none.
+            val best = results
+                .sortedByDescending {
+                    LyricQuery.relevance(
+                        it.trackName, it.artistName, candidate.title, candidate.artist
+                    )
+                }
+                .firstNotNullOfOrNull { pickLyrics(it, track) }
+            if (!best.isNullOrEmpty()) return best
+        }
+
+        // Last resort: free-text search, which matches across both fields.
+        val fuzzyQuery = candidates.firstOrNull() ?: return emptyList()
+        val fuzzy = runCatching {
+            lyricsApi.searchLyricsFuzzy(
+                q = listOf(fuzzyQuery.title, fuzzyQuery.artist)
+                    .filter { it.isNotEmpty() }
+                    .joinToString(" ")
+            )
+        }.getOrDefault(emptyList())
+
+        return fuzzy
+            .sortedByDescending {
+                LyricQuery.relevance(
+                    it.trackName, it.artistName, fuzzyQuery.title, fuzzyQuery.artist
+                )
+            }
             .firstNotNullOfOrNull { pickLyrics(it, track) }
             ?: emptyList()
     }

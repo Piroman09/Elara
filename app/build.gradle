@@ -30,7 +30,20 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled = false
+            // Signed with the debug keystore so `assembleRelease` produces an
+            // APK that can actually be installed. Without a signingConfig the
+            // release output is unsigned, which is why the app had only ever
+            // been judged from an unoptimised debug build.
+            signingConfig = signingConfigs.debug
+
+            // `debuggable = false` is the single biggest smoothness win
+            // available and has nothing to do with the code. A debug build is
+            // `android:debuggable="true"`, which makes ART skip ahead-of-time
+            // compilation and JIT the whole app at runtime, and it keeps every
+            // bit of Compose's debug instrumentation on. R8 on top of that
+            // inlines the generated Compose code.
+            debuggable = false
+            minifyEnabled = true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
@@ -44,10 +57,12 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
-    // APK output name: Elara.apk
+    // APK output name. The release build is the one to install, so it keeps the
+    // plain `Elara.apk`; the debug build is suffixed so the two are never
+    // confused once both exist on disk.
     applicationVariants.all { variant ->
         variant.outputs.all {
-            outputFileName = "Elara.apk"
+            outputFileName = variant.buildType.name == "release" ? "Elara.apk" : "Elara-debug.apk"
         }
     }
 

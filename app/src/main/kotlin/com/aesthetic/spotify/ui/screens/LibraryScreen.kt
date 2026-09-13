@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.QueueMusic
@@ -24,9 +25,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aesthetic.spotify.ui.MainViewModel
+import com.aesthetic.spotify.ui.components.ImportSpotifyDialog
 import com.aesthetic.spotify.ui.components.TextInputDialog
 import com.aesthetic.spotify.ui.theme.AuraBg
+import com.aesthetic.spotify.ui.theme.AuraCard
 import com.aesthetic.spotify.ui.theme.AuraPurple
+import com.aesthetic.spotify.ui.theme.AuraDownload
+import com.aesthetic.spotify.ui.theme.DownloadsBrush
+import com.aesthetic.spotify.ui.theme.LikedSongsBrush
+import com.aesthetic.spotify.ui.theme.PlaylistBrush
+import com.aesthetic.spotify.ui.theme.SpotifyBrand
+import com.aesthetic.spotify.ui.theme.AuraTextSecondary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +48,7 @@ fun LibraryScreen(
     val playlists by viewModel.playlists.collectAsState()
     val sourceSetting by viewModel.sourceSetting.collectAsState()
     var showCreatePlaylist by remember { mutableStateOf(false) }
+    var showImportSpotify by remember { mutableStateOf(false) }
     var showSourceSettings by remember { mutableStateOf(false) }
 
     Column(
@@ -83,15 +93,27 @@ fun LibraryScreen(
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
                     )
-                    TextButton(onClick = { showCreatePlaylist = true }) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = null,
-                            tint = AuraPurple,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("New", color = AuraPurple, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { showImportSpotify = true }) {
+                            Icon(
+                                Icons.Default.Download,
+                                contentDescription = null,
+                                tint = SpotifyBrand,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Import", color = SpotifyBrand, fontWeight = FontWeight.Bold)
+                        }
+                        TextButton(onClick = { showCreatePlaylist = true }) {
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = null,
+                                tint = AuraPurple,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("New", color = AuraPurple, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -100,7 +122,7 @@ fun LibraryScreen(
             item {
                 SpecialPlaylistCard(
                     icon = Icons.Default.Favorite,
-                    brush = Brush.linearGradient(listOf(Color(0xFF450EFF), Color(0xFFADC0FF))),
+                    brush = LikedSongsBrush,
                     title = "Liked Songs",
                     subtitle = "${likedTracks.size} songs",
                     onClick = { onOpenPlaylist("liked") }
@@ -109,7 +131,7 @@ fun LibraryScreen(
             item {
                 SpecialPlaylistCard(
                     icon = Icons.Default.DownloadDone,
-                    brush = Brush.linearGradient(listOf(Color(0xFF0E7490), Color(0xFF34D399))),
+                    brush = DownloadsBrush,
                     title = "Downloads",
                     subtitle = "${downloadedTracks.size} songs saved offline",
                     onClick = { onOpenPlaylist("downloads") }
@@ -121,17 +143,21 @@ fun LibraryScreen(
                 item {
                     Text(
                         "Create playlists to organise your music.",
-                        color = Color.Gray,
+                        color = AuraTextSecondary,
                         modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
                     )
                 }
             } else {
-                items(playlists, key = { it.id }) { playlist ->
+                items(
+                    items = playlists,
+                    key = { it.id },
+                    contentType = { "playlist" }
+                ) { playlist ->
                     Card(
                         onClick = { onOpenPlaylist(playlist.id) },
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
-                            containerColor = Color.White.copy(alpha = 0.06f)
+                            containerColor = AuraCard
                         )
                     ) {
                         Row(
@@ -142,11 +168,7 @@ fun LibraryScreen(
                                 modifier = Modifier
                                     .size(52.dp)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(
-                                        Brush.linearGradient(
-                                            listOf(Color(0xFF8B5CF6), Color(0xFFEC4899))
-                                        )
-                                    ),
+                                    .background(PlaylistBrush),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
@@ -165,14 +187,14 @@ fun LibraryScreen(
                                 )
                                 Text(
                                     "${playlist.tracks.size} songs",
-                                    color = Color.Gray,
+                                    color = AuraTextSecondary,
                                     fontSize = 12.sp
                                 )
                             }
                             Icon(
                                 Icons.Default.ChevronRight,
                                 contentDescription = null,
-                                tint = Color.Gray
+                                tint = AuraTextSecondary
                             )
                         }
                     }
@@ -191,6 +213,17 @@ fun LibraryScreen(
                 showCreatePlaylist = false
             },
             onDismiss = { showCreatePlaylist = false }
+        )
+    }
+
+    if (showImportSpotify) {
+        ImportSpotifyDialog(
+            viewModel = viewModel,
+            onSuccess = { playlist ->
+                showImportSpotify = false
+                onOpenPlaylist(playlist.id)
+            },
+            onDismiss = { showImportSpotify = false }
         )
     }
 
@@ -215,7 +248,7 @@ private fun SpecialPlaylistCard(
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.06f))
+        colors = CardDefaults.cardColors(containerColor = AuraCard)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -233,9 +266,9 @@ private fun SpecialPlaylistCard(
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                Text(subtitle, color = Color.Gray, fontSize = 12.sp)
+                Text(subtitle, color = AuraTextSecondary, fontSize = 12.sp)
             }
-            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color.Gray)
+            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = AuraTextSecondary)
         }
     }
 }

@@ -1,7 +1,7 @@
 package com.aesthetic.spotify.ui.components
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -9,30 +9,27 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,19 +37,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.theme.PixelBg
-import kotlinx.coroutines.flow.distinctUntilChanged
+import com.aesthetic.spotify.ui.theme.AuraBg
+import com.aesthetic.spotify.ui.theme.AuraError
+import com.aesthetic.spotify.ui.theme.AuraPurple
+import com.aesthetic.spotify.ui.theme.AuraViolet
+import com.aesthetic.spotify.ui.theme.AuraTextSecondary
+import com.aesthetic.spotify.ui.theme.Motion
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -61,7 +59,6 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.material3.Surface
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
@@ -76,11 +73,16 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
     val lyrics by viewModel.currentLyrics.collectAsState()
     val lyricsLoading by viewModel.isLyricsLoading.collectAsState()
     val playbackError by viewModel.playbackError.collectAsState()
-    val positionMs by viewModel.positionMs.collectAsState()
+    // Deliberately *not* unwrapped with `by`. `by` reads `.value` in this
+    // composable's scope, so the playback tick re-composed the whole player —
+    // top bar, dropdown, artwork, lyrics, controls and the queue drawer — 2.5
+    // times a second. The State object itself is stable, so passing it down
+    // costs nothing here and the leaves that need the time read it themselves.
+    val positionState = viewModel.positionMs.collectAsState()
     val durationMs by viewModel.durationMs.collectAsState()
+    val isQueueOpen by viewModel.isQueueOpen.collectAsState()
 
     var showLyrics by remember { mutableStateOf(false) }
-    var scrubPosition by remember { mutableStateOf<Float?>(null) }
     var showAddToPlaylist by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
     val downloadStates by viewModel.downloadStates.collectAsState()
@@ -88,17 +90,33 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
 
     if (track == null) return
 
+    // The player is an overlay, not a navigation destination, so the system
+    // back gesture would otherwise pop the screen *behind* it and leave the
+    // player stranded on top of the previous destination.
+    //
+    // The queue is a layer *inside* the player, so back has to unwind it first —
+    // a single handler would throw away the queue and the player together. The
+    // two are mutually exclusive rather than stacked, because only the
+    // last-registered *enabled* handler ever receives the event.
+    BackHandler(enabled = isQueueOpen) { viewModel.setQueueOpen(false) }
+    BackHandler(enabled = !isQueueOpen) { onDismiss() }
+
     val accent = runCatching {
         Color(android.graphics.Color.parseColor(track!!.accentColor ?: "#8B5CF6"))
-    }.getOrDefault(Color(0xFF8B5CF6))
+    }.getOrDefault(AuraPurple)
 
-    val sliderMax = if (durationMs > 0) durationMs.toFloat() else 1f
-    val sliderValue = (scrubPosition ?: positionMs.toFloat()).coerceIn(0f, sliderMax)
-
-    // Active lyric line for the current playback position.
-    val activeLine = remember(lyrics, positionMs) {
-        if (lyrics.isEmpty()) -1
-        else lyrics.indexOfLast { it.time * 1000f <= positionMs }
+    // Derived, not remembered-on-position. `derivedStateOf` recomputes lazily
+    // and — the important part — only notifies when the *computed value*
+    // actually changes. The position ticks 2.5 times a second but the active
+    // lyric line changes once every few seconds, so the ticks are swallowed
+    // here instead of reaching the UI. It is read inside the lyric rows, so
+    // even a genuine change repaints two rows rather than the whole screen.
+    val activeLineState = remember(lyrics, positionState) {
+        derivedStateOf {
+            val pos = positionState.value
+            if (lyrics.isEmpty()) -1
+            else lyrics.indexOfLast { it.time * 1000f <= pos }
+        }
     }
 
     Box(
@@ -106,7 +124,11 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(accent.copy(alpha = 0.5f), PixelBg)
+                    // Blended against AuraBg instead of left translucent: the
+                    // full-screen player is now overlaid on the live UI rather
+                    // than swapped in, so a 50 %-alpha top stop would let the
+                    // list underneath show through it.
+                    colors = listOf(accent.copy(alpha = 0.5f).compositeOver(AuraBg), AuraBg)
                 )
             )
             .statusBarsPadding()
@@ -118,80 +140,49 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Collapse", tint = Color.White)
                 }
+                // `weight(1f)` rather than padding a centred label clear of the
+                // buttons: the right side now carries two of them, so symmetric
+                // insets would leave the album name only ~120 dp on a 360 dp
+                // phone. Taking the leftover space gives it ~168 dp and costs
+                // only a 24 dp offset from true centre.
                 Text(
                     text = track!!.album,
                     color = Color.White,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.align(Alignment.CenterVertically)
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f)
                 )
-                IconButton(onClick = { showMoreMenu = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "More options", tint = Color.White)
-                }
-                DropdownMenu(
-                    expanded = showMoreMenu,
-                    onDismissRequest = { showMoreMenu = false },
-                    modifier = Modifier.background(Color(0xFF1A1A1C))
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Add to playlist", color = Color.White) },
-                        leadingIcon = {
-                            Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = Color.White)
-                        },
-                        onClick = {
-                            showMoreMenu = false
-                            showAddToPlaylist = true
-                        }
+                IconButton(onClick = { viewModel.setQueueOpen(true) }) {
+                    Icon(
+                        imageVector = Icons.Default.QueueMusic,
+                        contentDescription = "Queue",
+                        tint = Color.White
                     )
-                    when {
-                        downloadStates[track!!.id]
-                            is com.aesthetic.spotify.data.download.DownloadManager.State.Downloading -> {
-                            DropdownMenuItem(
-                                text = { Text("Downloading…", color = Color.Gray) },
-                                leadingIcon = {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = Color.White
-                                    )
-                                },
-                                onClick = {}
-                            )
-                        }
-                        downloadedEntries.any { it.track.id == track!!.id } -> {
-                            DropdownMenuItem(
-                                text = { Text("Remove download", color = Color.White) },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.DownloadDone,
-                                        contentDescription = null,
-                                        tint = Color(0xFF34D399)
-                                    )
-                                },
-                                onClick = {
-                                    showMoreMenu = false
-                                    viewModel.deleteDownload(track!!.id)
-                                }
-                            )
-                        }
-                        else -> {
-                            DropdownMenuItem(
-                                text = { Text("Download", color = Color.White) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Download, contentDescription = null, tint = Color.White)
-                                },
-                                onClick = {
-                                    showMoreMenu = false
-                                    viewModel.downloadTrack(track!!)
-                                }
-                            )
-                        }
+                }
+                // A dropdown anchors to its parent, so it gets its own Box around
+                // the button. As a direct child of the full-width row it opened
+                // at the far left edge rather than under the button.
+                Box {
+                    IconButton(onClick = { showMoreMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More options", tint = Color.White)
                     }
+                    TrackContextMenu(
+                        expanded = showMoreMenu,
+                        onDismiss = { showMoreMenu = false },
+                        track = track!!,
+                        viewModel = viewModel,
+                        onAddToPlaylist = { showAddToPlaylist = true },
+                        downloadState = downloadStates[track!!.id],
+                        isDownloaded = downloadedEntries.any { it.track.id == track!!.id }
+                    )
                 }
             }
 
@@ -199,22 +190,28 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
 
             Spacer(modifier = Modifier.weight(1f))
 
-            if (showLyrics) {
-                LyricsPane(
-                    lyrics = lyrics,
-                    activeLine = activeLine,
-                    isLoading = lyricsLoading
-                )
-            } else {
-                AsyncImage(
-                    model = track!!.albumArt,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                        .clip(RoundedCornerShape(28.dp)),
-                    contentScale = ContentScale.Crop
-                )
+            // Cross-faded rather than swapped instantly. Both panes are the
+            // same size (a full-width square), and that is what makes this
+            // clean — a cross-fade between children of different sizes
+            // re-lays-out mid-transition and reads as a jump, not a fade.
+            Crossfade(
+                targetState = showLyrics,
+                animationSpec = tween(Motion.Standard, easing = Motion.StandardEasing),
+                label = "playerPane"
+            ) { lyricsMode ->
+                if (lyricsMode) {
+                    LyricsPane(
+                        lyrics = lyrics,
+                        activeLineState = activeLineState,
+                        isLoading = lyricsLoading
+                    )
+                } else {
+                    TrackArtwork(
+                        url = track!!.albumArt,
+                        modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                        cornerRadius = 28.dp
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(36.dp))
@@ -232,7 +229,7 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = track!!.artist, 
-                    color = Color.LightGray, 
+                    color = AuraTextSecondary, 
                     fontSize = 16.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -241,32 +238,23 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Android 14/15 Squiggly Waveform Seekbar
-            PixelSquigglySlider(
-                value = sliderValue,
-                onValueChange = { scrubPosition = it },
-                onValueChangeFinished = {
-                    scrubPosition?.let { viewModel.seekTo(it.toLong()) }
-                    scrubPosition = null
-                },
-                valueRange = 0f..sliderMax,
+            // The seek bar and the elapsed-time label are the only things on
+            // this screen that change on a playback tick, so they live in their
+            // own composable with the scrub state inside it. Inlined here, every
+            // tick invalidated the whole player — including the always-composed
+            // queue drawer — just to move a thumb a few pixels.
+            SeekSection(
+                positionState = positionState,
+                durationMs = durationMs,
                 isPlaying = isPlaying,
-                activeColor = com.aesthetic.spotify.ui.theme.PixelSage
+                onSeek = { viewModel.seekTo(it) }
             )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(formatTime(if (scrubPosition != null) scrubPosition!!.toLong() else positionMs), color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
-                Text(formatTime(durationMs), color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
-            }
 
             playbackError?.let { err ->
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = err,
-                    color = Color(0xFFF87171),
+                    color = AuraError,
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
@@ -295,7 +283,7 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                 // Pixel Material 3 Squircle Play/Pause FAB
                 FloatingActionButton(
                     onClick = { viewModel.togglePlay() },
-                    containerColor = com.aesthetic.spotify.ui.theme.PixelSage,
+                    containerColor = AuraViolet,
                     contentColor = Color.Black,
                     shape = RoundedCornerShape(26.dp),
                     modifier = Modifier.size(64.dp)
@@ -315,13 +303,25 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                     Icon(
                         imageVector = Icons.Default.Lyrics,
                         contentDescription = "Lyrics",
-                        tint = if (showLyrics) com.aesthetic.spotify.ui.theme.PixelSage else Color.White
+                        tint = if (showLyrics) AuraViolet else Color.White
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(48.dp))
         }
+
+        // Rendered *inside* the player's layer. The shell owns its own copy, but
+        // that one sits below the full-screen player in the z-order, so reusing
+        // it here would open the panel behind the player and look like nothing
+        // happened. MainScaffold suppresses its copy while the player is
+        // expanded, so only one of the two is ever composed.
+        QueueDrawer(
+            viewModel = viewModel,
+            isOpen = isQueueOpen,
+            onDismiss = { viewModel.setQueueOpen(false) },
+            modifier = Modifier.fillMaxSize()
+        )
     }
 
     if (showAddToPlaylist) {
@@ -336,15 +336,17 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
 @Composable
 private fun LyricsPane(
     lyrics: List<com.aesthetic.spotify.data.model.LyricLine>,
-    activeLine: Int,
+    activeLineState: State<Int>,
     isLoading: Boolean
 ) {
     val listState = rememberLazyListState()
 
-    // Keep the active line in view.
-    LaunchedEffect(listState) {
-        snapshotFlow { activeLine }
-            .distinctUntilChanged()
+    // Keep the active line in view. Reads the State rather than a plain Int, so
+    // the playback tick arrives here as a snapshot-flow emission instead of a
+    // recomposition of the pane. `snapshotFlow` already de-duplicates, so
+    // `distinctUntilChanged` is now redundant and has been dropped with it.
+    LaunchedEffect(listState, activeLineState) {
+        snapshotFlow { activeLineState.value }
             .collect { idx ->
                 if (idx >= 0) {
                     runCatching {
@@ -359,14 +361,14 @@ private fun LyricsPane(
 
     if (isLoading) {
         Box(
-            modifier = Modifier.fillMaxWidth().height(400.dp),
+            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
             contentAlignment = Alignment.Center
         ) {
             CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp)
         }
     } else if (lyrics.isEmpty()) {
         Box(
-            modifier = Modifier.fillMaxWidth().height(400.dp),
+            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -379,28 +381,32 @@ private fun LyricsPane(
     } else {
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxWidth().height(400.dp)
+            // Square, matching the artwork exactly. It used to be a fixed
+            // 400 dp, which on a 360 dp-wide phone left the two panes 88 dp
+            // apart in height and made the cross-fade above impossible to do
+            // without the layout jumping.
+            modifier = Modifier.fillMaxWidth().aspectRatio(1f)
         ) {
-            itemsIndexed(lyrics) { index, line ->
-                val isActive = index == activeLine
-                val color by animateColorAsState(
-                    targetValue = if (isActive) Color.White else Color.White.copy(alpha = 0.4f),
-                    label = "lyricColor"
-                )
-                val scale by animateFloatAsState(
-                    targetValue = if (isActive) 1.05f else 1f,
-                    label = "lyricScale"
-                )
+            itemsIndexed(
+                items = lyrics,
+                key = { _, line -> line.id },
+                contentType = { _, _ -> "lyric" }
+            ) { index, line ->
+                // A plain swap instead of animateColorAsState + animateFloatAsState
+                // + Modifier.scale(). The scale was the expensive part: it wraps a
+                // full-width 22 sp Text in its own graphics layer, and two rows
+                // rebuilt that layer on every active-line change. Bold + full
+                // opacity is just as legible at zero per-frame cost.
+                val isActive = index == activeLineState.value
                 Text(
                     text = line.text,
-                    color = color,
+                    color = if (isActive) Color.White else Color.White.copy(alpha = 0.4f),
                     fontSize = 22.sp,
                     fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 8.dp)
-                        .scale(scale)
                 )
             }
         }
@@ -414,6 +420,52 @@ private fun formatTime(ms: Long): String {
     return "%d:%02d".format(m, s)
 }
 
+/**
+ * The seek bar plus its elapsed-time label, and the only two things on this
+ * screen that change on a playback tick.
+ *
+ * They are isolated here so that a tick invalidates this composable and nothing
+ * else. Before, the position was read at the top of [FullScreenPlayer], so every
+ * tick re-composed the entire screen — top bar, dropdown, artwork, lyric pane,
+ * control row and the always-composed queue drawer — just to move a thumb a few
+ * pixels. The scrub state lives here too, which is what keeps it out of the
+ * parent's scope.
+ */
+@Composable
+private fun SeekSection(
+    positionState: State<Long>,
+    durationMs: Long,
+    isPlaying: Boolean,
+    onSeek: (Long) -> Unit
+) {
+    var scrubPosition by remember { mutableStateOf<Float?>(null) }
+
+    val sliderMax = if (durationMs > 0) durationMs.toFloat() else 1f
+    val displayMs = scrubPosition?.toLong() ?: positionState.value
+
+    PixelSquigglySlider(
+        value = displayMs.toFloat().coerceIn(0f, sliderMax),
+        onValueChange = { scrubPosition = it },
+        onValueChangeFinished = {
+            scrubPosition?.let { onSeek(it.toLong()) }
+            scrubPosition = null
+        },
+        valueRange = 0f..sliderMax,
+        isPlaying = isPlaying,
+        activeColor = AuraViolet
+    )
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        // Text compares its String argument, so when the tick lands inside the
+        // same second the label is skipped rather than re-measured.
+        Text(formatTime(displayMs), color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+        Text(formatTime(durationMs), color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+    }
+}
+
 @Composable
 fun PixelSquigglySlider(
     value: Float,
@@ -422,11 +474,15 @@ fun PixelSquigglySlider(
     valueRange: ClosedFloatingPointRange<Float>,
     isPlaying: Boolean,
     modifier: Modifier = Modifier,
-    activeColor: Color = com.aesthetic.spotify.ui.theme.PixelSage,
+    activeColor: Color = AuraViolet,
     inactiveColor: Color = Color.White.copy(alpha = 0.2f)
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "waveTransition")
-    val phase by if (isPlaying) {
+    // Deliberately held as a State instead of read with `by`. The value is only
+    // consumed inside the Canvas draw lambda below, so the 60 fps wave
+    // animation invalidates the draw phase alone. Reading it here in
+    // composition re-composed this slider on every frame of the wave.
+    val phaseState: State<Float> = if (isPlaying) {
         infiniteTransition.animateFloat(
             initialValue = 0f,
             targetValue = (2 * Math.PI).toFloat(),
@@ -440,6 +496,11 @@ fun PixelSquigglySlider(
         remember { mutableStateOf(0f) }
     }
 
+    // Reused across frames instead of reallocated. The wave is redrawn up to 60
+    // times a second while playing, so `Path()` per frame was 60 short-lived
+    // objects a second for no reason.
+    val wavePath = remember { Path() }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -451,9 +512,12 @@ fun PixelSquigglySlider(
             val progressFraction = ((value - valueRange.start) / range).coerceIn(0f, 1f)
             val progressX = progressFraction * size.width
             val midY = size.height / 2f
+            val stroke = 4.dp.toPx()
+            val thumbRadius = 6.dp.toPx()
             val amp = if (isPlaying) 3.5.dp.toPx() else 0f
             val wavelength = 24.dp.toPx()
             val pi2 = (Math.PI * 2.0).toFloat()
+            val phase = phaseState.value
 
             // Inactive straight track
             if (progressX < size.width) {
@@ -461,38 +525,64 @@ fun PixelSquigglySlider(
                     color = inactiveColor,
                     start = Offset(progressX, midY),
                     end = Offset(size.width, midY),
-                    strokeWidth = 4.dp.toPx(),
+                    strokeWidth = stroke,
                     cap = StrokeCap.Round
                 )
             }
 
-            // Active Squiggly waveform path
             if (progressX > 0f) {
-                val path = Path().apply {
-                    moveTo(0f, midY)
+                if (amp == 0f) {
+                    // Paused: zero amplitude means the "wave" is a straight
+                    // line, so skip the path walk entirely.
+                    drawLine(
+                        color = activeColor,
+                        start = Offset(0f, midY),
+                        end = Offset(progressX, midY),
+                        strokeWidth = stroke,
+                        cap = StrokeCap.Round
+                    )
+                    drawCircle(
+                        color = Color.White,
+                        radius = thumbRadius,
+                        center = Offset(progressX, midY)
+                    )
+                } else {
+                    // Six samples per wavelength instead of one every 4 px. At a
+                    // 24 dp wavelength the old step worked out at roughly 17
+                    // points per period — about 3x more line segments than a
+                    // 4 dp stroke can resolve. That detail was invisible and
+                    // paid for on every frame of the animation.
+                    wavePath.reset()
+                    wavePath.moveTo(0f, midY)
+                    val step = (wavelength / 6f).coerceAtLeast(1f)
                     var x = 0f
-                    val step = 4f
                     while (x <= progressX) {
-                        val y = midY + kotlin.math.sin(((x / wavelength) * pi2 - phase).toDouble()).toFloat() * amp
-                        lineTo(x, y)
+                        wavePath.lineTo(
+                            x,
+                            midY + kotlin.math.sin((x / wavelength) * pi2 - phase) * amp
+                        )
                         x += step
                     }
-                    val finalY = midY + kotlin.math.sin(((progressX / wavelength) * pi2 - phase).toDouble()).toFloat() * amp
-                    lineTo(progressX, finalY)
-                }
-                drawPath(
-                    path = path,
-                    color = activeColor,
-                    style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
-                )
+                    wavePath.lineTo(
+                        progressX,
+                        midY + kotlin.math.sin((progressX / wavelength) * pi2 - phase) * amp
+                    )
+                    drawPath(
+                        path = wavePath,
+                        color = activeColor,
+                        style = Stroke(width = stroke, cap = StrokeCap.Round)
+                    )
 
-                // Pixel Slider Thumb
-                val thumbY = midY + kotlin.math.sin(((progressX / wavelength) * pi2 - phase).toDouble()).toFloat() * amp
-                drawCircle(
-                    color = Color.White,
-                    radius = 6.dp.toPx(),
-                    center = Offset(progressX, thumbY)
-                )
+                    // Pixel Slider Thumb
+                    drawCircle(
+                        color = Color.White,
+                        radius = thumbRadius,
+                        center = Offset(
+                            progressX,
+                            midY + kotlin.math.sin((progressX / wavelength) * pi2 - phase) * amp
+                        )
+                    )
+                }
             }
         }
 

@@ -38,16 +38,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.aesthetic.spotify.data.model.Track
 import com.aesthetic.spotify.ui.MainViewModel
 import com.aesthetic.spotify.ui.components.AddToPlaylistDialog
+import com.aesthetic.spotify.ui.components.TrackArtwork
 import com.aesthetic.spotify.ui.theme.AuraBg
+import com.aesthetic.spotify.ui.theme.AuraTextSecondary
 import com.aesthetic.spotify.ui.theme.AuraPurple
+import com.aesthetic.spotify.ui.theme.AuraSuccess
 
 /** Browsed editorial playlist (JioSaavn featured) — browsing only, not in the user's library. */
 @Composable
@@ -59,6 +60,13 @@ fun BrowsePlaylistScreen(
     val isLoading by viewModel.isBrowseLoading.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     var addTrack by remember { mutableStateOf<Track?>(null) }
+
+    // Hoisted out of the rows — see SearchTrackItem.
+    val downloadStates by viewModel.downloadStates.collectAsState()
+    val downloadedEntries by viewModel.downloadedTracks.collectAsState()
+    val downloadedIds = remember(downloadedEntries) {
+        downloadedEntries.mapTo(HashSet()) { it.track.id }
+    }
 
     Column(
         modifier = Modifier
@@ -74,7 +82,7 @@ fun BrowsePlaylistScreen(
             IconButton(onClick = onBack) {
                 Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            Text("Playlist", color = Color.Gray, fontSize = 14.sp)
+            Text("Playlist", color = AuraTextSecondary, fontSize = 14.sp)
         }
 
         when {
@@ -86,7 +94,7 @@ fun BrowsePlaylistScreen(
             browse == null -> Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
-            ) { Text("Couldn't load this playlist.", color = Color.Gray) }
+            ) { Text("Couldn't load this playlist.", color = AuraTextSecondary) }
 
             else -> {
                 val playlist = browse!!
@@ -98,13 +106,11 @@ fun BrowsePlaylistScreen(
                 ) {
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            AsyncImage(
-                                model = playlist.image,
-                                contentDescription = playlist.title,
-                                modifier = Modifier
-                                    .size(110.dp)
-                                    .clip(RoundedCornerShape(12.dp)),
-                                contentScale = ContentScale.Crop
+                            TrackArtwork(
+                                url = playlist.image,
+                                size = 110.dp,
+                                cornerRadius = 12.dp,
+                                contentDescription = playlist.title
                             )
                             Spacer(modifier = Modifier.width(16.dp))
                             Column {
@@ -115,11 +121,11 @@ fun BrowsePlaylistScreen(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text(playlist.subtitle, color = Color.Gray, fontSize = 13.sp)
+                                Text(playlist.subtitle, color = AuraTextSecondary, fontSize = 13.sp)
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
                                     if (saved) "Saved in Library ✓" else "Save to Library",
-                                    color = if (saved) Color(0xFF34D399) else AuraPurple,
+                                    color = if (saved) AuraSuccess else AuraPurple,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier
@@ -170,12 +176,18 @@ fun BrowsePlaylistScreen(
                         Spacer(modifier = Modifier.height(24.dp))
                     }
 
-                    items(playlist.tracks, key = { it.id }) { track ->
+                    items(
+                        items = playlist.tracks,
+                        key = { it.id },
+                        contentType = { "track" }
+                    ) { track ->
                         SearchTrackItem(
                             track = track,
                             onClick = { viewModel.playTrack(track, playlist.tracks) },
                             viewModel = viewModel,
-                            onAddToPlaylist = { addTrack = track }
+                            onAddToPlaylist = { addTrack = track },
+                            downloadState = downloadStates[track.id],
+                            isDownloaded = track.id in downloadedIds
                         )
                     }
                 }

@@ -1,15 +1,10 @@
 package com.aesthetic.spotify.playback
 
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
-import androidx.core.app.NotificationCompat
+import androidx.media3.common.Player
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import com.aesthetic.spotify.MainActivity
-import com.aesthetic.spotify.R
+import androidx.media3.session.SessionResult
 
 /**
  * Holds the MediaSession around the shared PlaybackManager player, so system
@@ -18,11 +13,65 @@ import com.aesthetic.spotify.R
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
 
+    /**
+     * Held in a field so the wrapper that advertises next/previous to the
+     * system outlives [onCreate]. The session is built around this rather than
+     * the raw ExoPlayer — see [QueueAwarePlayer] for why a single-MediaItem
+     * player otherwise hides the notification's next/previous buttons.
+     */
+    private var sessionPlayer: QueueAwarePlayer? = null
+
+    /**
+     * media3-native controllers (the app's own MediaController, and the
+     * PendingIntents the notification builds via ActionFactory) request
+     * next/previous as COMMAND_SEEK_TO_NEXT / COMMAND_SEEK_TO_PREVIOUS, which
+     * media3 maps onto Player.seekToNextMediaItem() / seekToPreviousMediaItem().
+     * Those are no-ops against a one-item playlist, so route them to the real
+     * cursor queue. The legacy path (SystemUI, lock screen, Bluetooth) does not
+     * come through here at all — it calls seekToNext()/seekToPrevious()
+     * directly, which [QueueAwarePlayer] handles.
+     *
+     * `onPlayerCommandRequest` is deprecated in media3 1.4.x (a replacement is
+     * planned) but is still the only pre-command hook, and
+     * `MediaSessionImpl.onPlayerCommandRequestOnHandler` does invoke it.
+     */
+    private val sessionCallback = object : MediaSession.Callback {
+        @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+        override fun onPlayerCommandRequest(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            playerCommand: Int
+        ): Int {
+            val manager = PlaybackManager.getInstance(this@PlaybackService)
+            return when (playerCommand) {
+                Player.COMMAND_SEEK_TO_NEXT,
+                Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> {
+                    manager.playNext()
+                    SessionResult.RESULT_SUCCESS
+                }
+                Player.COMMAND_SEEK_TO_PREVIOUS,
+                Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
+                    manager.playPrevious()
+                    SessionResult.RESULT_SUCCESS
+                }
+                else -> super.onPlayerCommandRequest(session, controller, playerCommand)
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
-        val player = PlaybackManager.getInstance(this).exoPlayer
+        val manager = PlaybackManager.getInstance(this)
+        val player = QueueAwarePlayer(
+            player = manager.exoPlayer,
+            onNext = manager::playNext,
+            onPrevious = manager::playPrevious
+        )
+        sessionPlayer = player
         val provider = PlaybackNotificationProvider(this)
-        mediaSession = MediaSession.Builder(this, player).build()
+        mediaSession = MediaSession.Builder(this, player)
+            .setCallback(sessionCallback)
+            .build()
         setMediaNotificationProvider(provider)
         provider.ensureChannel()
         // NOTE: no eager startForeground() here. The service may be created by
@@ -44,6 +93,7 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         mediaSession?.release()
         mediaSession = null
+        sessionPlayer = null
         super.onDestroy()
     }
 }

@@ -2,13 +2,22 @@ package com.aesthetic.spotify.data.playlist
 
 import android.content.Context
 import android.util.Log
+import androidx.compose.runtime.Immutable
+import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
-import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 
+/**
+ * `@Immutable` for the same reason as [com.aesthetic.spotify.data.model.Track]:
+ * all properties are `val`, but `tracks` is a `List`, which Compose infers as
+ * unstable — so without this every playlist row in the Library re-composed on
+ * any unrelated state change. Nothing mutates a playlist in place; updates go
+ * through `copy()`.
+ */
+@Immutable
 data class Playlist(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -33,7 +42,7 @@ class PlaylistManager private constructor(private val context: Context) {
             }
     }
 
-    private val gson = Gson()
+    private val gson = SafeGson.instance
     private val file = java.io.File(context.filesDir, FILE_NAME)
 
     private val _playlists = MutableStateFlow<List<Playlist>>(load())
@@ -106,7 +115,11 @@ class PlaylistManager private constructor(private val context: Context) {
     private fun load(): List<Playlist> = try {
         if (file.exists()) {
             val type = object : TypeToken<List<Playlist>>() {}.type
-            gson.fromJson(file.readText(), type) ?: emptyList()
+            val loaded: List<Playlist>? = gson.fromJson(file.readText(), type)
+            // Nested tracks are normalised by SafeGson; the list itself can still
+            // come back null because Gson ignores the constructor default.
+            loaded?.map { playlist -> playlist.copy(tracks = playlist.tracks.orEmpty()) }
+                ?: emptyList()
         } else emptyList()
     } catch (e: Exception) {
         Log.e(TAG, "load: ${e.message}")

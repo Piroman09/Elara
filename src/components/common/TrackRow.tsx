@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Track } from '../../types/music';
 import { useMusicStore } from '../../store/useMusicStore';
 import { formatTime } from '../../utils/formatters';
-import { Play, Pause, Heart, MoreHorizontal, Plus, ListPlus, Radio, Trash2, Download } from 'lucide-react';
+import { Play, Pause, Heart, MoreHorizontal, Plus, ListPlus, ArrowUpToLine, Radio, Trash2, Download } from 'lucide-react';
 
 interface TrackRowProps {
   track: Track;
@@ -30,6 +30,7 @@ export const TrackRow: React.FC<TrackRowProps> = ({
   const likedTrackIds = useMusicStore(state => state.likedTrackIds);
   const toggleLikeTrack = useMusicStore(state => state.toggleLikeTrack);
   const addToQueue = useMusicStore(state => state.addToQueue);
+  const playNext = useMusicStore(state => state.playNext);
   const playlists = useMusicStore(state => state.playlists);
   const addTrackToPlaylist = useMusicStore(state => state.addTrackToPlaylist);
   const removeTrackFromPlaylist = useMusicStore(state => state.removeTrackFromPlaylist);
@@ -39,13 +40,16 @@ export const TrackRow: React.FC<TrackRowProps> = ({
   const [menuOpen, setMenuOpen] = useState(false);
   const isCurrentTrack = currentTrack?.id === track.id;
   const isLiked = likedTrackIds.includes(track.id);
+  const contextSource = currentPlaylistId
+    ? playlists.find(p => p.id === currentPlaylistId)?.name
+    : undefined;
 
   const handlePlayClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (isCurrentTrack) {
       togglePlay();
     } else {
-      playTrack(track, contextPlaylistTracks);
+      playTrack(track, contextPlaylistTracks, contextSource);
     }
   };
 
@@ -58,7 +62,7 @@ export const TrackRow: React.FC<TrackRowProps> = ({
 
   return (
     <div 
-      onClick={() => isCurrentTrack ? togglePlay() : playTrack(track, contextPlaylistTracks)}
+      onClick={() => isCurrentTrack ? togglePlay() : playTrack(track, contextPlaylistTracks, contextSource)}
       className={`group grid grid-cols-[16px_4fr_3fr_minmax(100px,2fr)_minmax(80px,1fr)] items-center gap-4 px-4 py-2.5 rounded-2xl transition-all duration-150 cursor-pointer ${
         isCurrentTrack 
           ? 'bg-white/10 text-white shadow-lg backdrop-blur-md border border-white/10' 
@@ -189,6 +193,18 @@ export const TrackRow: React.FC<TrackRowProps> = ({
                 }} 
               />
               <div className="absolute right-0 bottom-full mb-2 w-56 py-2 glass-panel-elevated rounded-2xl z-50 shadow-2xl border border-zinc-700/60 font-sans">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    playNext(track);
+                    setMenuOpen(false);
+                  }}
+                  className="w-full px-4 py-2 text-left text-xs text-zinc-200 hover:bg-white/10 flex items-center gap-2.5 transition-colors"
+                >
+                  <ArrowUpToLine className="w-3.5 h-3.5 text-zinc-400" />
+                  Play next
+                </button>
+
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

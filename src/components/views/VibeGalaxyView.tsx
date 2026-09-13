@@ -23,7 +23,7 @@ export const VibeGalaxyView: React.FC = () => {
   const handlePlayRandomStar = () => {
     if (galaxyTracks.length === 0) return;
     const randomIdx = Math.floor(Math.random() * galaxyTracks.length);
-    playTrack(galaxyTracks[randomIdx], galaxyTracks);
+    playTrack(galaxyTracks[randomIdx], galaxyTracks, 'Vibe Galaxy');
   };
 
   return (
@@ -125,7 +125,7 @@ export const VibeGalaxyView: React.FC = () => {
                   if (isCurrent) {
                     togglePlay();
                   } else {
-                    playTrack(track, galaxyTracks);
+                    playTrack(track, galaxyTracks, 'Vibe Galaxy');
                   }
                 }}
                 className="absolute cursor-pointer transform -translate-x-1/2 -translate-y-1/2 group will-change-transform"

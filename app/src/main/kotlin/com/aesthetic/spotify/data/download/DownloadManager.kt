@@ -5,8 +5,9 @@ import android.net.Uri
 import android.os.Environment
 import android.util.Log
 import android.widget.Toast
+import com.aesthetic.spotify.data.diagnostics.PlaybackDiagnostics
+import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
-import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,7 +65,7 @@ class DownloadManager private constructor(private val context: Context) {
         val finalPath: String
     )
 
-    private val gson = Gson()
+    private val gson = SafeGson.instance
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val indexFile = File(context.filesDir, INDEX_FILE)
     private val pendingFile = File(context.filesDir, PENDING_FILE)
@@ -390,10 +391,7 @@ class DownloadManager private constructor(private val context: Context) {
     }
 
     private fun diag(line: String) {
-        runCatching {
-            val dir = context.getExternalFilesDir(null) ?: context.filesDir
-            File(dir, "playback_diag.txt").appendText("\n${System.currentTimeMillis()}  DL  $line\n")
-        }
+        PlaybackDiagnostics.append(context, "DL  $line")
     }
 
     private fun saveIndex(entries: List<Entry>) {

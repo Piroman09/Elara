@@ -1,5 +1,6 @@
 package com.aesthetic.spotify.data.network
 
+import com.aesthetic.spotify.data.model.SafeGson
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -28,7 +29,8 @@ object RetrofitClient {
 
     private fun build(baseUrl: String): Retrofit = Retrofit.Builder()
         .baseUrl(baseUrl)
-        .addConverterFactory(GsonConverterFactory.create())
+        // SafeGson, so any response type that ever embeds a Track is normalised.
+        .addConverterFactory(GsonConverterFactory.create(SafeGson.instance))
         .client(okHttp())
         .build()
 

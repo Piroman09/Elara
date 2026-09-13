@@ -24,7 +24,7 @@ export const ArtistView: React.FC = () => {
     if (isArtistPlaying) {
       togglePlay();
     } else {
-      playTrack(artistTracks[0], artistTracks);
+      playTrack(artistTracks[0], artistTracks, artist.name);
     }
   };
 
@@ -125,7 +125,7 @@ export const ArtistView: React.FC = () => {
               image={album.coverArt}
               onPlayClick={() => {
                 if (album.tracks.length > 0) {
-                  playTrack(album.tracks[0], album.tracks);
+                  playTrack(album.tracks[0], album.tracks, album.title);
                 }
               }}
             />

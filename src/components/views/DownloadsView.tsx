@@ -40,7 +40,7 @@ export const DownloadsView: React.FC = () => {
     if (currentTrack?.id === track.id) {
       togglePlay();
     } else {
-      playTrack(track, tracks);
+      playTrack(track, tracks, 'Downloads');
     }
   };
 
@@ -143,7 +143,7 @@ export const DownloadsView: React.FC = () => {
               <button
                 onClick={() => {
                   const first = downloadedTracks[0]?.track;
-                  if (first) playTrack(first, tracks);
+                  if (first) playTrack(first, tracks, 'Downloads');
                 }}
                 className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-teal-400 to-cyan-500 text-black font-extrabold text-xs shadow-lg shadow-cyan-500/30 hover:scale-105 active:scale-95 transition-all flex items-center gap-2"
               >

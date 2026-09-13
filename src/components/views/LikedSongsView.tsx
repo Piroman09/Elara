@@ -19,7 +19,7 @@ export const LikedSongsView: React.FC = () => {
     if (isCurrentPlayingLiked) {
       togglePlay();
     } else {
-      playTrack(likedTracks[0], likedTracks);
+      playTrack(likedTracks[0], likedTracks, 'Liked Songs');
     }
   };
 

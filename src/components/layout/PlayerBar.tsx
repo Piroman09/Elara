@@ -31,6 +31,7 @@ export const PlayerBar: React.FC = () => {
   const repeatMode = useMusicStore(state => state.repeatMode);
   const likedTrackIds = useMusicStore(state => state.likedTrackIds);
   const queue = useMusicStore(state => state.queue);
+  const queueIndex = useMusicStore(state => state.queueIndex);
   const isLyricsOpen = useMusicStore(state => state.isLyricsOpen);
   const isQueueOpen = useMusicStore(state => state.isQueueOpen);
   const sleepTimerRemaining = useMusicStore(state => state.sleepTimerRemaining);
@@ -234,7 +235,7 @@ export const PlayerBar: React.FC = () => {
           }`}
         >
           <ListMusic className="w-4 h-4" />
-          {queue.length > 0 && (
+          {(queueIndex >= 0 ? queue.length - queueIndex - 1 : queue.length) > 0 && (
             <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-spotify-green" />
           )}
         </button>

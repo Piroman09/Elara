@@ -19,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import com.aesthetic.spotify.data.download.DownloadManager
 import com.aesthetic.spotify.data.model.Track
 import com.aesthetic.spotify.ui.MainViewModel
+import com.aesthetic.spotify.ui.theme.AuraError
+import com.aesthetic.spotify.ui.theme.AuraDownload
 
 /**
  * Download control with three states: idle (download icon), downloading
@@ -55,7 +57,7 @@ fun DownloadButton(
                 Icon(
                     Icons.Default.DownloadDone,
                     contentDescription = "Downloaded — tap to remove",
-                    tint = Color(0xFF34D399),
+                    tint = AuraDownload,
                     modifier = Modifier.size(iconSize + 2.dp)
                 )
             }
@@ -74,7 +76,7 @@ fun DownloadButton(
                 Icon(
                     Icons.Default.Download,
                     contentDescription = state.message,
-                    tint = Color(0xFFF87171),
+                    tint = AuraError,
                     modifier = Modifier.size(iconSize)
                 )
             }

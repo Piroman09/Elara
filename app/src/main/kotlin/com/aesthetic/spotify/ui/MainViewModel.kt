@@ -12,27 +12,28 @@ import androidx.media3.session.SessionToken
 import com.aesthetic.spotify.data.download.DownloadManager
 import com.aesthetic.spotify.data.model.LyricLine
 import com.aesthetic.spotify.data.model.MusicSource
+import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
 import com.aesthetic.spotify.data.playlist.Playlist
 import com.aesthetic.spotify.data.playlist.PlaylistManager
 import com.aesthetic.spotify.data.repository.MusicRepository
 import com.aesthetic.spotify.data.source.SourcePreferences
 import com.aesthetic.spotify.data.source.SourceSetting
+import com.aesthetic.spotify.data.network.SpotifyPlaylistImporter
 import com.aesthetic.spotify.data.network.YouTubeMusicApi
 import com.aesthetic.spotify.playback.PlaybackManager
 import com.aesthetic.spotify.playback.PlaybackService
+import com.aesthetic.spotify.playback.RepeatMode
 import com.google.common.util.concurrent.MoreExecutors
-import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.withContext
 
 @OptIn(FlowPreview::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -51,7 +52,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * notification stays in sync with the UI player.
      */
     private var mediaControllerFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
-    private val gson = Gson()
+    private val gson = SafeGson.instance
 
     // UI State
     private val _searchQuery = MutableStateFlow("")
@@ -86,6 +87,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val positionMs: StateFlow<Long> = playbackManager.positionMs
     val durationMs: StateFlow<Long> = playbackManager.durationMs
     val queue: StateFlow<List<Track>> = playbackManager.queue
+    val queueIndex: StateFlow<Int> = playbackManager.queueIndex
+    val isShuffle: StateFlow<Boolean> = playbackManager.isShuffle
+    val repeatMode: StateFlow<RepeatMode> = playbackManager.repeatMode
     val playbackError: StateFlow<String?> = playbackManager.playbackError
 
     private val _isPlayerExpanded = MutableStateFlow(false)
@@ -111,6 +115,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playlists: StateFlow<List<Playlist>> = playlistManager.playlists
 
     fun createPlaylist(name: String): Playlist = playlistManager.create(name)
+
+    /**
+     * Outcome of a Spotify import, shaped for the import dialog: the saved
+     * playlist plus the counts it reports and the cover Spotify returned
+     * ([Playlist] itself has no cover field, so it is carried alongside).
+     */
+    data class SpotifyImportSummary(
+        val playlist: Playlist,
+        val coverArt: String,
+        val totalInSpotify: Int,
+        val importedCount: Int
+    )
+
+    /**
+     * Imports a public Spotify playlist or album by link/URI/ID and saves it as
+     * a local playlist.
+     *
+     * The tracks arrive as Spotify *metadata* with JioSaavn as their source and
+     * no usable stream URL, so they play through the normal resolve-at-play-time
+     * path (see [PlaybackManager.streamResolver]) rather than a stored URL.
+     * Returns a failure instead of throwing so the dialog can render the error.
+     */
+    suspend fun importSpotifyPlaylist(
+        urlOrId: String,
+        onProgress: (imported: Int, total: Int, name: String, coverArt: String) -> Unit = { _, _, _, _ -> }
+    ): Result<SpotifyImportSummary> = withContext(Dispatchers.IO) {
+        runCatching {
+            val result = SpotifyPlaylistImporter.fetchPlaylist(urlOrId, onProgress)
+            val playlist = playlistManager.createWithTracks(result.name, result.tracks)
+            SpotifyImportSummary(
+                playlist = playlist,
+                coverArt = result.coverArt,
+                totalInSpotify = result.totalInPlaylist,
+                importedCount = playlist.tracks.size
+            )
+        }
+    }
 
     fun renamePlaylist(id: String, newName: String) {
         playlistManager.rename(id, newName)
@@ -340,24 +381,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         candidates: List<Track>,
         queue: List<Track>
     ): List<Track> {
-        val excludedIds = (current.id + queue.map { it.id }).toSet()
-        val currentArtist = current.artist.lowercase()
-        val currentGenre = current.genre.lowercase()
+        val excludedIds = (queue.map { it.id } + current.id).toSet()
+        // `orEmpty()` because Gson can leave nulls in these non-null fields.
+        val currentArtist = current.artist.orEmpty().trim()
+        val currentGenre = current.genre.orEmpty().trim()
 
         return candidates
             .filter { it.id !in excludedIds }
             .map { track ->
                 var score = 0
-                // Same artist: high score
-                if (track.artist.lowercase() == currentArtist) score += 50
+                // Same artist: high score. Blank values must not count as a
+                // match, or every genre-less track would score the same and
+                // "similar" would be meaningless.
+                if (currentArtist.isNotEmpty() &&
+                    track.artist.orEmpty().equals(currentArtist, ignoreCase = true)
+                ) score += 50
                 // Same genre: medium score
-                if (track.genre.lowercase() == currentGenre) score += 30
+                if (currentGenre.isNotEmpty() &&
+                    track.genre.orEmpty().equals(currentGenre, ignoreCase = true)
+                ) score += 30
                 // Same source: small boost
                 if (track.source == current.source) score += 5
                 // Energy similarity
-                if (track.energy != null && current.energy != null) {
-                    val energyDiff = kotlin.math.abs(track.energy!! - current.energy!!)
-                    score += max(0, 15 - energyDiff.toInt())
+                val trackEnergy = track.energy
+                val currentEnergy = current.energy
+                if (trackEnergy != null && currentEnergy != null) {
+                    val energyDiff = kotlin.math.abs(trackEnergy - currentEnergy)
+                    score += kotlin.math.max(0, 15 - energyDiff)
                 }
                 track to score
             }
@@ -393,12 +443,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playbackManager.seekTo(ms)
     }
 
+    // ── Queue management ──────────────────────────────────────────────────
+
+    /** Jump to a queue position without discarding the rest of the queue. */
+    fun jumpToQueueIndex(index: Int) {
+        playbackManager.jumpTo(index)
+    }
+
     fun removeFromQueue(index: Int) {
         playbackManager.removeFromQueue(index)
     }
 
     fun clearQueue() {
         playbackManager.clearQueue()
+    }
+
+    /**
+     * Append to the queue.
+     *
+     * @return `true` if this started playback instead, because nothing was
+     *   playing and there was no queue to append to. Callers use it to say
+     *   "Playing now" rather than "Added to queue".
+     */
+    fun addToQueue(track: Track): Boolean = playbackManager.addToQueue(track)
+
+    /** Queue a track so it plays right after the current one. */
+    fun playNextInQueue(track: Track) {
+        playbackManager.playNextInQueue(track)
+    }
+
+    fun moveInQueue(from: Int, to: Int) {
+        playbackManager.moveInQueue(from, to)
+    }
+
+    fun toggleShuffle() {
+        playbackManager.toggleShuffle()
+    }
+
+    fun cycleRepeat() {
+        playbackManager.cycleRepeat()
     }
 
     fun togglePlay() {
@@ -445,7 +528,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return try {
             val json = prefs.getString("liked_tracks", null) ?: return emptyList()
             val type = object : TypeToken<List<Track>>() {}.type
-            gson.fromJson(json, type)
+            val loaded: List<Track>? = gson.fromJson(json, type)
+            loaded ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }

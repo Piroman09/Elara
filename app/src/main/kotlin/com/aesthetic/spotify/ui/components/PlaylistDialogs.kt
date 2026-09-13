@@ -37,6 +37,10 @@ import androidx.compose.ui.unit.sp
 import com.aesthetic.spotify.data.model.Track
 import com.aesthetic.spotify.ui.MainViewModel
 import com.aesthetic.spotify.ui.theme.AuraPurple
+import com.aesthetic.spotify.ui.theme.AuraTextSecondary
+import com.aesthetic.spotify.ui.theme.AuraMenu
+import com.aesthetic.spotify.ui.theme.AuraError
+import com.aesthetic.spotify.ui.theme.AuraDownload
 
 @Composable
 fun TextInputDialog(
@@ -56,13 +60,13 @@ fun TextInputDialog(
                 value = text,
                 onValueChange = { text = it },
                 singleLine = true,
-                placeholder = { Text("Playlist name", color = Color.Gray) },
+                placeholder = { Text("Playlist name", color = AuraTextSecondary) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
                     cursorColor = AuraPurple,
                     focusedBorderColor = AuraPurple,
-                    unfocusedBorderColor = Color.Gray.copy(alpha = 0.4f)
+                    unfocusedBorderColor = AuraTextSecondary.copy(alpha = 0.4f)
                 )
             )
         },
@@ -73,9 +77,9 @@ fun TextInputDialog(
             ) { Text(confirmLabel, color = AuraPurple, fontWeight = FontWeight.Bold) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = Color.Gray) }
+            TextButton(onClick = onDismiss) { Text("Cancel", color = AuraTextSecondary) }
         },
-        containerColor = Color(0xFF1A1A1C)
+        containerColor = AuraMenu
     )
 }
 
@@ -123,7 +127,7 @@ fun AddToPlaylistDialog(
                 if (playlists.isEmpty()) {
                     Text(
                         "No playlists yet — create your first one.",
-                        color = Color.Gray,
+                        color = AuraTextSecondary,
                         fontSize = 13.sp,
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
@@ -146,7 +150,7 @@ fun AddToPlaylistDialog(
                                 Icon(
                                     Icons.Default.QueueMusic,
                                     contentDescription = null,
-                                    tint = Color.Gray
+                                    tint = AuraTextSecondary
                                 )
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column(modifier = Modifier.weight(1f)) {
@@ -158,7 +162,7 @@ fun AddToPlaylistDialog(
                                     )
                                     Text(
                                         "${playlist.tracks.size} songs",
-                                        color = Color.Gray,
+                                        color = AuraTextSecondary,
                                         fontSize = 12.sp
                                     )
                                 }
@@ -166,7 +170,7 @@ fun AddToPlaylistDialog(
                                     Icon(
                                         Icons.Default.Check,
                                         contentDescription = "Already in playlist",
-                                        tint = Color(0xFF34D399)
+                                        tint = AuraDownload
                                     )
                                 }
                             }
@@ -177,8 +181,8 @@ fun AddToPlaylistDialog(
         },
         confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel", color = Color.Gray) }
+            TextButton(onClick = onDismiss) { Text("Cancel", color = AuraTextSecondary) }
         },
-        containerColor = Color(0xFF1A1A1C)
+        containerColor = AuraMenu
     )
 }

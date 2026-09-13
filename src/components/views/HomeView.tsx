@@ -80,7 +80,7 @@ export const HomeView: React.FC = () => {
                 onClick={(e) => {
                   e.stopPropagation();
                   if (item.tracks && item.tracks.length > 0) {
-                    playTrack(item.tracks[0], item.tracks);
+                    playTrack(item.tracks[0], item.tracks, item.title);
                   } else {
                     item.action();
                   }
@@ -125,7 +125,7 @@ export const HomeView: React.FC = () => {
               onClick={() => setActiveView('playlist', { playlistId: playlist.id })}
               onPlayClick={() => {
                 if (playlist.tracks.length > 0) {
-                  playTrack(playlist.tracks[0], playlist.tracks);
+                  playTrack(playlist.tracks[0], playlist.tracks, playlist.name);
                 }
               }}
             />
@@ -154,12 +154,12 @@ export const HomeView: React.FC = () => {
               image={track.albumArt}
               isCurrent={currentTrack?.id === track.id}
               isPlaying={isPlaying}
-              onClick={() => playTrack(track, MOCK_TRACKS)}
+              onClick={() => playTrack(track, MOCK_TRACKS, 'Home')}
               onPlayClick={() => {
                 if (currentTrack?.id === track.id) {
                   togglePlay();
                 } else {
-                  playTrack(track, MOCK_TRACKS);
+                  playTrack(track, MOCK_TRACKS, 'Home');
                 }
               }}
             />
@@ -191,7 +191,7 @@ export const HomeView: React.FC = () => {
               onClick={() => setActiveView('artist', { artistId: artist.id })}
               onPlayClick={() => {
                 if (artist.topTracks.length > 0) {
-                  playTrack(artist.topTracks[0], artist.topTracks);
+                  playTrack(artist.topTracks[0], artist.topTracks, artist.name);
                 }
               }}
             />

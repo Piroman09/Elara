@@ -2,8 +2,8 @@ package com.aesthetic.spotify.data.history
 
 import android.content.Context
 import android.util.Log
+import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
-import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,7 +25,7 @@ class PlayHistoryManager private constructor(context: Context) {
             }
     }
 
-    private val gson = Gson()
+    private val gson = SafeGson.instance
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     private val _recent = MutableStateFlow<List<Track>>(load())
@@ -43,7 +43,8 @@ class PlayHistoryManager private constructor(context: Context) {
 
     private fun load(): List<Track> = try {
         val type = object : TypeToken<List<Track>>() {}.type
-        gson.fromJson(prefs.getString(KEY, null), type) ?: emptyList()
+        val loaded: List<Track>? = gson.fromJson(prefs.getString(KEY, null), type)
+        loaded ?: emptyList()
     } catch (e: Exception) {
         emptyList()
     }

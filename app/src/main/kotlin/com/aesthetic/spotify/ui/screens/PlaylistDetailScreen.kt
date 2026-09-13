@@ -56,6 +56,13 @@ import com.aesthetic.spotify.ui.MainViewModel
 import com.aesthetic.spotify.ui.components.AddToPlaylistDialog
 import com.aesthetic.spotify.ui.components.TextInputDialog
 import com.aesthetic.spotify.ui.theme.AuraBg
+import com.aesthetic.spotify.ui.theme.AuraMenu
+import com.aesthetic.spotify.ui.theme.AuraError
+import com.aesthetic.spotify.ui.theme.AuraDownload
+import com.aesthetic.spotify.ui.theme.DownloadsBrush
+import com.aesthetic.spotify.ui.theme.LikedSongsBrush
+import com.aesthetic.spotify.ui.theme.PlaylistBrush
+import com.aesthetic.spotify.ui.theme.AuraTextSecondary
 
 /**
  * Playlist detail for both user playlists and the pinned specials
@@ -71,6 +78,13 @@ fun PlaylistDetailScreen(
     val likedTracks by viewModel.likedTracks.collectAsState()
     val downloadedEntries by viewModel.downloadedTracks.collectAsState()
     val sourceSetting by viewModel.sourceSetting.collectAsState()
+
+    // Resolved once for the whole list instead of once per row — see
+    // SearchTrackItem for why the per-row version was a problem.
+    val downloadStates by viewModel.downloadStates.collectAsState()
+    val downloadedIds = remember(downloadedEntries) {
+        downloadedEntries.mapTo(HashSet()) { it.track.id }
+    }
 
     val isSpecial = playlistId == "liked" || playlistId == "downloads"
 
@@ -90,9 +104,9 @@ fun PlaylistDetailScreen(
         else -> Icons.Default.QueueMusic
     }
     val headerBrush = when (playlistId) {
-        "liked" -> Brush.linearGradient(listOf(Color(0xFF450EFF), Color(0xFFADC0FF)))
-        "downloads" -> Brush.linearGradient(listOf(Color(0xFF0E7490), Color(0xFF34D399)))
-        else -> Brush.linearGradient(listOf(Color(0xFF8B5CF6), Color(0xFFEC4899)))
+        "liked" -> LikedSongsBrush
+        "downloads" -> DownloadsBrush
+        else -> PlaylistBrush
     }
 
     var showRename by remember { mutableStateOf(false) }
@@ -122,7 +136,7 @@ fun PlaylistDetailScreen(
             }
             Text(
                 if (isSpecial) "Playlist" else "Playlist",
-                color = Color.Gray,
+                color = AuraTextSecondary,
                 fontSize = 14.sp,
                 modifier = Modifier.weight(1f)
             )
@@ -134,7 +148,7 @@ fun PlaylistDetailScreen(
                     Icon(
                         Icons.Default.Delete,
                         contentDescription = "Delete playlist",
-                        tint = Color(0xFFF87171)
+                        tint = AuraError
                     )
                 }
             }
@@ -173,7 +187,7 @@ fun PlaylistDetailScreen(
                             if (playlistId == "downloads")
                                 "${playlist.tracks.size} songs saved offline"
                             else "${playlist.tracks.size} songs",
-                            color = Color.Gray,
+                            color = AuraTextSecondary,
                             fontSize = 14.sp
                         )
                     }
@@ -224,19 +238,28 @@ fun PlaylistDetailScreen(
                             "downloads" -> "Tap the download icon on any song to save it offline."
                             else -> "No songs yet — use the add-to-playlist button on any song."
                         },
-                        color = Color.Gray
+                        color = AuraTextSecondary
                     )
                 }
             } else {
-                items(playlist.tracks, key = { it.id }) { track ->
+                items(
+                    items = playlist.tracks,
+                    key = { it.id },
+                    contentType = { "track" }
+                ) { track ->
                     SearchTrackItem(
                         track = track,
                         onClick = { viewModel.playTrack(track, playlist.tracks) },
                         viewModel = viewModel,
-                        onAddToPlaylist = if (isSpecial) {
-                            { addPlaylistTrack = track }
-                        } else null,
+                        // Always offered, including inside a user playlist. It
+                        // used to be hidden there on the reasoning that the song
+                        // is already in *a* playlist — but the useful action is
+                        // adding it to a *different* one, and hiding it made the
+                        // long-press menu inconsistent between screens.
+                        onAddToPlaylist = { addPlaylistTrack = track },
                         showSource = sourceSetting == com.aesthetic.spotify.data.source.SourceSetting.AUTO,
+                        downloadState = downloadStates[track.id],
+                        isDownloaded = track.id in downloadedIds,
                         onRemoveFromPlaylist = {
                             when (playlistId) {
                                 "liked" -> viewModel.toggleLikeTrack(track)
@@ -270,7 +293,7 @@ fun PlaylistDetailScreen(
             text = {
                 Text(
                     "\"${playlist.name}\" and its ${playlist.tracks.size} songs will be removed. Your downloaded files are not deleted.",
-                    color = Color.Gray
+                    color = AuraTextSecondary
                 )
             },
             confirmButton = {
@@ -278,14 +301,14 @@ fun PlaylistDetailScreen(
                     viewModel.deletePlaylist(playlist.id)
                     showDeleteConfirm = false
                     onBack()
-                }) { Text("Delete", color = Color(0xFFF87171), fontWeight = FontWeight.Bold) }
+                }) { Text("Delete", color = AuraError, fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) {
-                    Text("Cancel", color = Color.Gray)
+                    Text("Cancel", color = AuraTextSecondary)
                 }
             },
-            containerColor = Color(0xFF1A1A1C)
+            containerColor = AuraMenu
         )
     }
 

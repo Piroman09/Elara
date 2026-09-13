@@ -4,7 +4,6 @@ import { AmbientBackground } from './components/common/AmbientBackground';
 import { Sidebar } from './components/layout/Sidebar';
 import { Navbar } from './components/layout/Navbar';
 import { FloatingIslandPlayer } from './components/player/FloatingIslandPlayer';
-import { RightSidebar } from './components/layout/RightSidebar';
 import { QueueDrawer } from './components/player/QueueDrawer';
 
 // Views

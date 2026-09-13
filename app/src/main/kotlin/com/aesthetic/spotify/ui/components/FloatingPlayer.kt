@@ -10,32 +10,55 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.ui.theme.AuraPurple
 import androidx.compose.foundation.layout.Row
+import com.aesthetic.spotify.data.model.Track
+import com.aesthetic.spotify.ui.theme.AuraPlayerSurface
+import com.aesthetic.spotify.ui.theme.AuraViolet
+import com.aesthetic.spotify.ui.theme.AuraPurple
+import com.aesthetic.spotify.ui.theme.AuraTextPrimary
+import com.aesthetic.spotify.ui.theme.AuraTextSecondary
+import kotlinx.coroutines.flow.StateFlow
 
+private val PlayerSurface = AuraPlayerSurface
+private val PlayerBorder = Brush.horizontalGradient(
+    listOf(AuraPurple.copy(alpha = 0.5f), AuraViolet.copy(alpha = 0.5f))
+)
+private val ProgressBrush = Brush.horizontalGradient(listOf(AuraPurple, AuraViolet))
+private val PlayerShape = RoundedCornerShape(18.dp)
+
+/**
+ * The mini player docked above the navigation bar.
+ *
+ * [positionMs] / [durationMs] are passed as flows rather than plain values on
+ * purpose. Resolving them here — inside the leaf that actually draws the
+ * progress bar — keeps the 400 ms position tick from recomposing the scaffold
+ * and every screen behind it. See [MainScaffold] for the full explanation.
+ */
 @Composable
 fun FloatingPlayer(
     currentTrack: Track?,
     isPlaying: Boolean,
-    progress: Float,
+    positionMs: StateFlow<Long>,
+    durationMs: StateFlow<Long>,
     onTogglePlay: () -> Unit,
     onNext: () -> Unit,
     onExpand: () -> Unit,
@@ -44,29 +67,14 @@ fun FloatingPlayer(
 ) {
     if (currentTrack == null) return
 
-    val animatedProgress by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = progress.coerceIn(0f, 1f),
-        animationSpec = androidx.compose.animation.core.tween(350),
-        label = "fpProgress"
-    )
-
     Box(
         modifier = modifier
             .padding(horizontal = 10.dp, vertical = 6.dp)
             .fillMaxWidth()
             .height(64.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(Color(0xFF15151B).copy(alpha = 0.95f))
-            .border(
-                1.dp,
-                androidx.compose.ui.graphics.Brush.horizontalGradient(
-                    listOf(
-                        com.aesthetic.spotify.ui.theme.AuraPurple.copy(alpha = 0.5f),
-                        com.aesthetic.spotify.ui.theme.AuraPink.copy(alpha = 0.5f)
-                    )
-                ),
-                RoundedCornerShape(18.dp)
-            )
+            .clip(PlayerShape)
+            .background(PlayerSurface.copy(alpha = 0.95f))
+            .border(1.dp, PlayerBorder, PlayerShape)
             .clickable { onExpand() }
             .padding(horizontal = 10.dp),
         contentAlignment = Alignment.CenterStart
@@ -75,13 +83,10 @@ fun FloatingPlayer(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxSize()
         ) {
-            AsyncImage(
-                model = currentTrack.albumArt,
-                contentDescription = null,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.Crop
+            TrackArtwork(
+                url = currentTrack.albumArt,
+                size = 48.dp,
+                cornerRadius = 10.dp
             )
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -89,7 +94,7 @@ fun FloatingPlayer(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = currentTrack.title,
-                    color = Color.White,
+                    color = AuraTextPrimary,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -97,7 +102,7 @@ fun FloatingPlayer(
                 )
                 Text(
                     text = currentTrack.artist,
-                    color = Color.Gray,
+                    color = AuraTextSecondary,
                     fontSize = 12.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -108,7 +113,7 @@ fun FloatingPlayer(
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                     contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = Color.White
+                    tint = AuraTextPrimary
                 )
             }
 
@@ -116,7 +121,7 @@ fun FloatingPlayer(
                 Icon(
                     imageVector = Icons.Default.SkipNext,
                     contentDescription = "Next",
-                    tint = Color.White
+                    tint = AuraTextPrimary
                 )
             }
 
@@ -124,22 +129,52 @@ fun FloatingPlayer(
                 Icon(
                     imageVector = Icons.Default.QueueMusic,
                     contentDescription = "Queue",
-                    tint = Color.White
+                    tint = AuraTextPrimary
                 )
             }
         }
 
-        // Progress bar at the bottom
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .fillMaxWidth(animatedProgress)
-                .height(3.dp)
-                .background(
-                    androidx.compose.ui.graphics.Brush.horizontalGradient(
-                        listOf(com.aesthetic.spotify.ui.theme.AuraPurple, com.aesthetic.spotify.ui.theme.AuraPink)
-                    )
-                )
+        ProgressBar(
+            positionMs = positionMs,
+            durationMs = durationMs,
+            modifier = Modifier.align(Alignment.BottomStart)
         )
     }
+}
+
+/**
+ * The 3 dp progress hairline.
+ *
+ * Split into its own composable so that reading the position only invalidates
+ * this function, and so the bar itself is drawn — not laid out — as it fills:
+ * `animated.value` is read inside `drawBehind`, which subscribes the *draw*
+ * scope, so a frame of the fill animation costs a redraw and no recomposition.
+ */
+@Composable
+private fun ProgressBar(
+    positionMs: StateFlow<Long>,
+    durationMs: StateFlow<Long>,
+    modifier: Modifier = Modifier
+) {
+    val position by positionMs.collectAsState()
+    val duration by durationMs.collectAsState()
+    val target = if (duration > 0L) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+
+    val animated = animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(400),
+        label = "fpProgress"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(3.dp)
+            .drawBehind {
+                val filled = size.width * animated.value.coerceIn(0f, 1f)
+                if (filled > 0f) {
+                    drawRect(brush = ProgressBrush, size = Size(filled, size.height))
+                }
+            }
+    )
 }
