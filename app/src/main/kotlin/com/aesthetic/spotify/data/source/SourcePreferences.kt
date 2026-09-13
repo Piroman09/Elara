@@ -1,6 +1,7 @@
 package com.aesthetic.spotify.data.source
 
 import android.content.Context
+import com.aesthetic.spotify.data.diagnostics.StartupTiming
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -30,7 +31,8 @@ class SourcePreferences private constructor(context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private val _setting = MutableStateFlow(load())
+    private val _setting =
+        MutableStateFlow(StartupTiming.measure("SourcePreferences.load") { load() })
     val setting: StateFlow<SourceSetting> = _setting
 
     fun set(value: SourceSetting) {

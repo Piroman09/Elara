@@ -14,6 +14,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.aesthetic.spotify.data.diagnostics.PlaybackDiagnostics
+import com.aesthetic.spotify.data.diagnostics.StartupTiming
 import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
 import com.google.gson.reflect.TypeToken
@@ -71,17 +72,19 @@ class PlaybackManager private constructor(context: Context) {
         .setConnectTimeoutMs(15000)
         .setReadTimeoutMs(15000)
 
-    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context)
-        .setMediaSourceFactory(
-            DefaultMediaSourceFactory(context).setDataSourceFactory(
-                // DefaultDataSource routes file:// to FileDataSource (downloaded
-                // songs) and http(s) to the HTTP factory (streaming). Passing
-                // the HTTP factory alone made local playback fail with
-                // ERROR_CODE_IO_UNSPECIFIED "Source error".
-                DefaultDataSource.Factory(context, httpDataSourceFactory)
+    val exoPlayer: ExoPlayer = StartupTiming.measure("ExoPlayer.build") {
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(context).setDataSourceFactory(
+                    // DefaultDataSource routes file:// to FileDataSource (downloaded
+                    // songs) and http(s) to the HTTP factory (streaming). Passing
+                    // the HTTP factory alone made local playback fail with
+                    // ERROR_CODE_IO_UNSPECIFIED "Source error".
+                    DefaultDataSource.Factory(context, httpDataSourceFactory)
+                )
             )
-        )
-        .build()
+            .build()
+    }
 
     private val _currentTrack = MutableStateFlow<Track?>(null)
     val currentTrack: StateFlow<Track?> = _currentTrack
@@ -206,7 +209,7 @@ class PlaybackManager private constructor(context: Context) {
             }
         })
 
-        restoreQueue()
+        StartupTiming.measure("PlaybackManager.restoreQueue") { restoreQueue() }
 
         // Position ticker for the UI slider/lyrics sync.
         scope.launch {

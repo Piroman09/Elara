@@ -6,6 +6,7 @@ import android.os.Environment
 import android.util.Log
 import android.widget.Toast
 import com.aesthetic.spotify.data.diagnostics.PlaybackDiagnostics
+import com.aesthetic.spotify.data.diagnostics.StartupTiming
 import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
 import com.google.gson.reflect.TypeToken
@@ -85,7 +86,8 @@ class DownloadManager private constructor(private val context: Context) {
         }
         .build()
 
-    private val _entries = MutableStateFlow<List<Entry>>(loadIndex())
+    private val _entries =
+        MutableStateFlow<List<Entry>>(StartupTiming.measure("DownloadManager.loadIndex") { loadIndex() })
     val entries: StateFlow<List<Entry>> = _entries
 
     private val _states = MutableStateFlow<Map<String, State>>(emptyMap())

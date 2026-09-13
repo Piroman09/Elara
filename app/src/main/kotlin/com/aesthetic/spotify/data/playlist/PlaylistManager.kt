@@ -3,6 +3,7 @@ package com.aesthetic.spotify.data.playlist
 import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.Immutable
+import com.aesthetic.spotify.data.diagnostics.StartupTiming
 import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
 import com.google.gson.reflect.TypeToken
@@ -71,7 +72,8 @@ class PlaylistManager private constructor(private val context: Context) {
     /** True while a write is queued or running. See [save] for why it exists. */
     private val saveQueued = AtomicBoolean(false)
 
-    private val _playlists = MutableStateFlow<List<Playlist>>(load())
+    private val _playlists =
+        MutableStateFlow<List<Playlist>>(StartupTiming.measure("PlaylistManager.load") { load() })
     val playlists: StateFlow<List<Playlist>> = _playlists
 
     fun get(id: String): Playlist? = _playlists.value.firstOrNull { it.id == id }

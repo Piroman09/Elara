@@ -11,6 +11,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.aesthetic.spotify.data.download.DownloadManager
 import com.aesthetic.spotify.data.model.LyricLine
+import com.aesthetic.spotify.data.diagnostics.StartupTiming
 import com.aesthetic.spotify.data.model.MusicSource
 import com.aesthetic.spotify.data.model.SafeGson
 import com.aesthetic.spotify.data.model.Track
@@ -78,7 +79,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val isConnecting: StateFlow<Boolean> = _isConnecting
 
     // Library
-    private val _likedTracks = MutableStateFlow<List<Track>>(loadLikedTracks())
+    private val _likedTracks =
+        MutableStateFlow<List<Track>>(StartupTiming.measure("MainViewModel.loadLikedTracks") { loadLikedTracks() })
     val likedTracks: StateFlow<List<Track>> = _likedTracks
 
     // Playback
@@ -256,6 +258,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         Log.d("MainViewModel", "Initializing ViewModel")
         loadFeaturedPlaylists()
         cleanupOldSeededPlaylists()
+
+        // Every property initializer in this class has run by now, so this is the
+        // one place that can report the whole cold-start cost in a single line.
+        // Warm constructions report nothing: the singletons are cached, so their
+        // load() never runs again. See StartupTiming.
+        StartupTiming.flush(appContext)
 
         // Trending follows the Music Source setting; re-fetches on change.
         viewModelScope.launch {
