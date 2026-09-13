@@ -117,3 +117,10 @@ dependencies {
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }
+
+// Release-build gate. `assembleRelease` is finalised by `verifyReleaseDex`,
+// which asserts that the reflection-critical classes, fields and enum
+// constants actually survived R8 into classes.dex. With no emulator available,
+// this is the only automated defence against Gson silently losing persisted
+// data. Skip with `-PskipDexVerify` when you just want an APK.
+apply from: 'verify-release-dex.gradle'

@@ -1,0 +1,205 @@
+// ---------------------------------------------------------------------------
+// verifyReleaseDex — the release-build gate.
+//
+// WHY THIS EXISTS
+// R8 maps JSON keys onto *field names*. If it strips or renames a field, Gson
+// does not throw — it silently deserialises to null and the app quietly loses
+// the user's data. There is no emulator on this machine, so that failure cannot
+// be caught at runtime before shipping. This task is the substitute: it reads
+// the built release APK and asserts, byte for byte, that the reflection-critical
+// classes, fields and enum constants actually survived into classes.dex.
+//
+// It is a heuristic (substring search over the dex), not a dex parser. That is
+// deliberate: it has no dependencies, runs in about a second, and every check
+// in it is a check that has a real failure mode behind it.
+//
+// It also audits proguard-rules.pro itself, because the rules are load-bearing
+// and deleting one is silent — `-dontobfuscate` in particular looks like a
+// needless cost to anyone who has not read the note at the top of that file.
+//
+// Wired via `assembleRelease.finalizedBy`, so a normal release build runs it.
+// Escape hatch: `./gradlew assembleRelease -PskipDexVerify`
+//
+// HOW TO EXTEND
+// Adding a new Gson-persisted type? Add its fully-qualified name to
+// `requiredTypes` (nested classes use `$`) and its field names to
+// `requiredFields`, then run `./gradlew verifyReleaseDex` to confirm.
+// ---------------------------------------------------------------------------
+
+def proguardFile = file('proguard-rules.pro')
+
+// Directives that must still be present in proguard-rules.pro. Whitespace is
+// normalised and comments are stripped before matching, so reformatting is fine
+// but deleting a rule is not.
+def requiredProguardDirectives = [
+        '-dontobfuscate',
+        '-keepattributes Signature',
+        '-keep class com.aesthetic.spotify.data.network.** { *; }',
+        '-keep class com.aesthetic.spotify.data.model.** { *; }',
+        '-keep class com.aesthetic.spotify.data.playlist.Playlist { *; }',
+        '-keep class com.aesthetic.spotify.data.download.DownloadManager$Entry { *; }',
+        '-keep class com.aesthetic.spotify.data.download.DownloadManager$Pending { *; }',
+]
+
+// Every type Gson reads or writes, plus the entry points the manifest names.
+// Derived from auditing each `fromJson` call site and each Retrofit endpoint.
+def requiredTypes = [
+        // Persisted to disk and read back — losing one loses user data.
+        'com.aesthetic.spotify.data.model.Track',
+        'com.aesthetic.spotify.data.model.Playlist',
+        'com.aesthetic.spotify.data.model.LyricLine',
+        'com.aesthetic.spotify.data.model.VibeCoords',
+        'com.aesthetic.spotify.data.model.MusicSource',
+        'com.aesthetic.spotify.data.model.SafeGson',
+        'com.aesthetic.spotify.data.playlist.Playlist',
+        'com.aesthetic.spotify.data.download.DownloadManager$Entry',
+        'com.aesthetic.spotify.data.download.DownloadManager$Pending',
+        // Deserialised by Retrofit's Gson converter. One representative per API.
+        'com.aesthetic.spotify.data.network.JioSong',
+        'com.aesthetic.spotify.data.network.SCTrack',
+        'com.aesthetic.spotify.data.network.LrcLibResult',
+        'com.aesthetic.spotify.data.network.ITunesResult',
+        // Referenced from AndroidManifest.xml, where a keep-rule mistake is fatal.
+        'com.aesthetic.spotify.AuraSonicApp',
+        'com.aesthetic.spotify.MainActivity',
+        'com.aesthetic.spotify.playback.PlaybackService',
+]
+
+// Field names Gson needs to find by reflection. A miss here means silent data
+// loss, so the distinctive names are the ones that carry real signal.
+def requiredFields = [
+        'data.model.Track'         : ['id', 'videoId', 'title', 'artist', 'artistId', 'album',
+                                      'albumArt', 'audioUrl', 'duration', 'genre', 'energy',
+                                      'accentColor', 'isLiked', 'source', 'tags'],
+        'data.model.Playlist'      : ['id', 'name', 'description', 'coverArt', 'tracks'],
+        'data.playlist.Playlist'   : ['id', 'name', 'createdAt', 'tracks'],
+        'DownloadManager$Entry'    : ['track', 'path'],
+        'DownloadManager$Pending'  : ['downloadId', 'track', 'finalPath'],
+]
+
+def requiredEnumConstants = [
+        'JIOSAAVN',
+        'YOUTUBE_MUSIC',
+]
+
+// Descriptors proving the Retrofit/Gson runtime machinery and its annotations
+// survived. `Lretrofit2/http/GET;` is an annotation descriptor — note that
+// `RuntimeVisibleAnnotations` is a class-file attribute name and never appears
+// as a string in a dex, so it is deliberately not checked here.
+def requiredFrameworkDescriptors = [
+        'Lretrofit2/Retrofit;',
+        'Lretrofit2/http/GET;',
+        'Lretrofit2/http/POST;',
+        'Lcom/google/gson/Gson;',
+        'Lcom/google/gson/annotations/SerializedName;',
+        'Lcom/google/gson/reflect/TypeToken;',
+]
+
+tasks.register('verifyReleaseDex') {
+    group = 'verification'
+    description = 'Asserts the R8-processed release dex still contains every reflection-critical symbol.'
+
+    // No dependsOn(assembleRelease): assembleRelease is finalisedBy this task,
+    // and declaring both directions on one pair is a dependency cycle.
+    doLast {
+        def failures = []
+
+        // --- 1. proguard-rules.pro -----------------------------------------
+        if (!proguardFile.exists()) {
+            failures << "proguard-rules.pro is missing — the release build has no keep rules."
+        } else {
+            def rules = proguardFile.readLines()
+                    .findAll { !it.trim().startsWith('#') }
+                    .join(' ')
+                    .replaceAll(/\s+/, ' ')
+                    .trim()
+            requiredProguardDirectives.each { directive ->
+                def needle = directive.replaceAll(/\s+/, ' ').trim()
+                if (!rules.contains(needle)) {
+                    failures << "proguard-rules.pro no longer contains: ${directive}"
+                }
+            }
+        }
+
+        // --- 2. locate and read the release APK ----------------------------
+        def apkDir = file('build/outputs/apk/release')
+        def apks = apkDir.exists() ? (apkDir.listFiles()?.findAll { it.name.endsWith('.apk') } ?: []) : []
+        def apk = apks.find { it.name == 'Elara.apk' } ?: apks.first()
+        if (apk == null) {
+            throw new GradleException(
+                    "verifyReleaseDex: no release APK in ${apkDir}.\n" +
+                            "Run `./gradlew assembleRelease` first (or drop -PskipDexVerify).")
+        }
+
+        def dexBlobs = []
+        new java.util.zip.ZipFile(apk).withCloseable { zip ->
+            def dexEntries = zip.entries().toList().findAll { it.name ==~ /classes\d*\.dex/ }
+            if (dexEntries.isEmpty()) {
+                throw new GradleException("verifyReleaseDex: ${apk.name} contains no classes*.dex.")
+            }
+            dexEntries.each { entry ->
+                zip.getInputStream(entry).withCloseable { input ->
+                    // ISO-8859-1 is a 1:1 byte->char mapping, so this is a safe
+                    // way to substring-search binary without corrupting offsets.
+                    dexBlobs << new String(input.bytes, 'ISO-8859-1')
+                }
+            }
+        }
+        def inDex = { String needle -> dexBlobs.any { it.contains(needle) } }
+
+        // --- 3. the symbol checks -----------------------------------------
+        requiredTypes.each { type ->
+            def descriptor = 'L' + type.replace('.', '/') + ';'
+            if (!inDex(descriptor)) {
+                failures << "class stripped from the dex: ${type}  (expected ${descriptor})"
+            }
+        }
+
+        requiredFields.each { owner, fields ->
+            fields.each { field ->
+                if (!inDex(field)) {
+                    failures << "field missing: ${owner}.${field}"
+                }
+            }
+        }
+
+        requiredEnumConstants.each { constant ->
+            if (!inDex(constant)) {
+                failures << "enum constant missing: ${constant}"
+            }
+        }
+
+        requiredFrameworkDescriptors.each { descriptor ->
+            if (!inDex(descriptor)) {
+                failures << "framework descriptor missing: ${descriptor}"
+            }
+        }
+
+        // --- 4. report -----------------------------------------------------
+        def fieldCount = requiredFields.values().sum { it.size() } ?: 0
+        logger.lifecycle("verifyReleaseDex: ${apk.name} (${apk.length()} bytes, " +
+                "${dexBlobs.size()} dex file(s))")
+        logger.lifecycle("  proguard rules    : ${requiredProguardDirectives.size()}")
+        logger.lifecycle("  required classes  : ${requiredTypes.size()}")
+        logger.lifecycle("  required fields   : ${fieldCount}")
+        logger.lifecycle("  enum constants    : ${requiredEnumConstants.size()}")
+        logger.lifecycle("  framework symbols : ${requiredFrameworkDescriptors.size()}")
+
+        if (failures) {
+            throw new GradleException(
+                    "\nverifyReleaseDex FAILED — ${failures.size()} symbol(s) did not survive R8.\n" +
+                            "This means Gson would silently lose data at runtime, and there is no\n" +
+                            "emulator here to catch it. Check app/proguard-rules.pro first.\n\n" +
+                            failures.collect { '  - ' + it }.join('\n'))
+        }
+
+        logger.lifecycle("  result            : OK — every reflection-critical symbol survived")
+    }
+}
+
+// A normal release build is a verified release build.
+tasks.matching { it.name == 'assembleRelease' }.configureEach {
+    if (!project.hasProperty('skipDexVerify')) {
+        finalizedBy 'verifyReleaseDex'
+    }
+}
