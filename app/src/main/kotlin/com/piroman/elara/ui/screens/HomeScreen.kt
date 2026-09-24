@@ -66,6 +66,43 @@ private val HomeCardWidth = 136.dp
 private val HomeCardGap = 14.dp
 private val HomeCardCorner = 12.dp
 
+/**
+ * Home's load-failure banner.
+ *
+ * Text-only on purpose: it appears when the app could not reach the network,
+ * and an icon is decoration the situation does not need. The Retry action is
+ * the point — [HomeRefreshPolicy]'s empty-state rule already re-fetches on the
+ * next resume, but a user staring at the screen should not have to background
+ * the app to ask again.
+ */
+@Composable
+private fun HomeErrorBanner(onRetry: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(HomeCardCorner),
+        colors = CardDefaults.cardColors(containerColor = AuraCardStrong)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Couldn't load today's picks",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Check your connection and try again.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = AuraTextSecondary
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(onClick = onRetry) {
+                Text("Retry")
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -85,6 +122,7 @@ fun HomeScreen(
     val youTubeHipHop by viewModel.youTubeHipHop.collectAsState()
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
     val mostPlayed by viewModel.mostPlayed.collectAsState()
+    val homeLoadFailed by viewModel.homeLoadFailed.collectAsState()
 
     // Home renders songs too, so the long-press menu's "Add to playlist" needs
     // the same screen-level dialog state the other track lists already keep.
@@ -160,6 +198,17 @@ fun HomeScreen(
                 }
             }
             Spacer(modifier = Modifier.height(24.dp))
+        }
+
+        // ── Load-failure banner ──────────────────────────────────────────
+        // Sits above every content row so it is the first thing the eye lands
+        // on, and only appears when the last batch finished with both critical
+        // rows empty — a fetch failure, not a thin catalogue.
+        if (homeLoadFailed) {
+            item(key = "home-error") {
+                HomeErrorBanner(onRetry = viewModel::retryHome)
+                Spacer(modifier = Modifier.height(28.dp))
+            }
         }
 
         // ── Featured playlists from JioSaavn (browse content) ───────────

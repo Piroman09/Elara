@@ -123,6 +123,24 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.13 (build 14) — 2026-09-24. Home now survives a failed load.
+        // Two silent failure modes fixed:
+        //
+        //  1. A failed trending fetch wrote emptyList() into the row, so the
+        //     user's Home lost Trending entirely until the next success —
+        //     indistinguishable from a broken app. TrendingCache (dead code
+        //     since it was written) is now wired in: every successful fetch is
+        //     saved, a failed one serves the cached tracks (however old), and a
+        //     cold start paints the cache before the fetch so the row is never
+        //     empty while the network works. The decision is pure
+        //     (TrendingCachePolicy, tested) for the same reason HomeRefreshPolicy
+        //     is: every way of getting it wrong is invisible.
+        //  2. All four Home loaders swallowed their errors into empty lists, so
+        //     a user on flaky connectivity saw an empty screen with no
+        //     explanation. A batch that finishes with both critical rows empty
+        //     now shows a banner with a Retry button (retryHome), which also
+        //     re-fetches trending and the YouTube rows.
+        //
         // 1.12 (build 13) — 2026-09-22. Three real defects in the YouTube rows,
         // found by rendering both queries through the app's own parser and
         // looking at the output rather than at the counts:
@@ -147,8 +165,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 13
-        versionName = "1.12"
+        versionCode = 14
+        versionName = "1.13"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true

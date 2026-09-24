@@ -21,6 +21,8 @@ import com.piroman.elara.data.model.Track
 import com.piroman.elara.data.playlist.Playlist
 import com.piroman.elara.data.playlist.PlaylistManager
 import com.piroman.elara.data.repository.MusicRepository
+import com.piroman.elara.data.repository.TrendingCache
+import com.piroman.elara.data.repository.TrendingCachePolicy
 import com.piroman.elara.data.lyrics.LyricsCache
 import com.piroman.elara.data.source.DataSaverPreferences
 import com.piroman.elara.data.source.PlaybackPreferences
@@ -55,6 +57,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val playbackPrefs = PlaybackPreferences.getInstance(application)
     private val lyricsCache = LyricsCache.getInstance(application)
     private val statsManager = ListeningStatsManager.getInstance(application)
+    private val trendingCache = TrendingCache.getInstance(application)
     private val playHistory = com.piroman.elara.data.history.PlayHistoryManager.getInstance(application)
     private val appContext = application.applicationContext
     private val prefs = application.getSharedPreferences("aurasonic_prefs", Context.MODE_PRIVATE)
@@ -324,6 +327,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var homeRowsLoading = false
 
     /**
+     * True when the last batch finished with Home's two critical rows empty —
+     * the signature of a failed fetch, not of a thin catalogue (see
+     * [homeCameBackEmpty]). Surface it as a banner with a Retry button: every
+     * other failure mode in this class logs and moves on, which leaves a user
+     * on flaky connectivity staring at an empty screen with no explanation.
+     */
+    private val _homeLoadFailed = MutableStateFlow(false)
+    val homeLoadFailed: StateFlow<Boolean> = _homeLoadFailed
+
+    /**
      * Every Home row, as one batch.
      *
      * These four loaders used to each launch their own coroutine straight from
@@ -345,6 +358,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadHomeRows() {
         homeRowsLoading = true
         homeRowsRequestedAtMs = System.currentTimeMillis()
+        // A retry must clear the banner the moment it starts, not when the
+        // batch lands — otherwise the button looks dead for the request's duration.
+        _homeLoadFailed.value = false
         viewModelScope.launch {
             try {
                 coroutineScope {
@@ -355,8 +371,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } finally {
                 homeRowsLoading = false
+                // All four loaders have completed by here (coroutineScope
+                // awaited them), so the two critical rows' final states are
+                // authoritative.
+                _homeLoadFailed.value = homeCameBackEmpty()
             }
         }
+    }
+
+    /**
+     * The Home banner's Retry: re-fetch the rows and trending now.
+     *
+     * Deliberately not routed through [refreshHomeIfStale] — its staleness
+     * window exists to spare *fresh* rows a network round trip, which is the
+     * opposite of what a user pressing Retry is asking for.
+     */
+    fun retryHome() {
+        loadHomeRows()
+        refreshTrending()
+        loadYouTubeMusicRows(sourcePreferences.setting.value)
     }
 
     /**
@@ -691,15 +724,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Refreshes Home's trending row, falling back to the daily cache when the
+     * fetch fails.
+     *
+     * The decision is [TrendingCachePolicy]'s; this site only executes it. On a
+     * successful fetch the cache is overwritten so the next failure serves
+     * today's tracks, not last week's.
+     */
     fun refreshTrending() {
         viewModelScope.launch {
+            // Cold start paints the cache *before* the fetch, so the row is
+            // never empty while the network works. Only an empty state is
+            // painted — a mid-session refresh must never regress fresh rows to
+            // yesterday's list. What wins once the fetch returns is
+            // TrendingCachePolicy's decision below, not this placeholder.
+            if (_trendingTracks.value.isEmpty()) {
+                trendingCache.getCachedTracksAnyAge()?.takeIf { it.isNotEmpty() }?.let {
+                    _trendingTracks.value = it
+                }
+            }
             Log.d("MainViewModel", "Refreshing trending tracks")
             _isConnecting.value = true
-            _trendingTracks.value = runCatching {
+            val fetched = runCatching {
                 repository.getTrendingBySource(sourcePreferences.setting.value)
             }.getOrElse {
                 Log.e("MainViewModel", "trending failed: ${it.message}")
                 emptyList()
+            }
+            when (val outcome = TrendingCachePolicy.resolve(fetched, trendingCache.getCachedTracksAnyAge())) {
+                is TrendingCachePolicy.Outcome.Fetched -> {
+                    _trendingTracks.value = outcome.tracks
+                    withContext(Dispatchers.IO) { trendingCache.saveDailyTracks(outcome.tracks) }
+                }
+                is TrendingCachePolicy.Outcome.Stale -> {
+                    Log.w("MainViewModel", "trending fetch empty — serving ${outcome.tracks.size} cached tracks")
+                    _trendingTracks.value = outcome.tracks
+                }
+                TrendingCachePolicy.Outcome.None -> Unit
             }
             _isConnecting.value = false
         }
