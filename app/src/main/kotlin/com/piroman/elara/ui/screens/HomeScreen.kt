@@ -1,9 +1,18 @@
 package com.piroman.elara.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -16,7 +25,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -28,6 +40,7 @@ import com.piroman.elara.data.repository.MusicRepository
 import com.piroman.elara.ui.MainViewModel
 import com.piroman.elara.ui.LazyKeys
 import com.piroman.elara.ui.components.AddToPlaylistDialog
+import com.piroman.elara.ui.components.EqualizerBars
 import com.piroman.elara.ui.components.SectionHeading
 import com.piroman.elara.ui.components.TrackArtwork
 import com.piroman.elara.ui.components.TrackContextMenu
@@ -36,6 +49,7 @@ import com.piroman.elara.ui.theme.AuraCardStrong
 import com.piroman.elara.ui.theme.AuraHomeGlow
 import com.piroman.elara.ui.theme.AuraTextSecondary
 import com.piroman.elara.ui.theme.AuraViolet
+import com.piroman.elara.ui.theme.Motion
 import com.piroman.elara.data.model.Track
 
 /**
@@ -66,6 +80,35 @@ private val HomeGlowHeight = 320.dp
 private val HomeCardWidth = 136.dp
 private val HomeCardGap = 14.dp
 private val HomeCardCorner = 12.dp
+
+/**
+ * Press feedback for Home's tiles: the tile shrinks slightly while held.
+ *
+ * The UX guidance this implements is "show immediate feedback on press" — a
+ * touch surface that does not react until its action fires feels dead on a
+ * phone, where there is no hover state. Scale (not a tint) because every tile
+ * here is an *artwork*: darkening artwork changes what the user is looking at,
+ * while moving it changes nothing about the image itself.
+ *
+ * `graphicsLayer` with a lambda reads `pressed` inside the draw phase, so the
+ * scale never re-composes the card — the same draw-phase rule
+ * `PixelSquigglySlider` already follows for its wave.
+ *
+ * The [interactionSource] is a parameter, not a local: it has to be the same
+ * source the click modifier observes, and click modifiers take theirs as an
+ * argument. Callers pass the one they handed to `combinedClickable`/`onClick`.
+ */
+@Composable
+private fun Modifier.pressScale(
+    interactionSource: MutableInteractionSource
+): Modifier {
+    val pressed by interactionSource.collectIsPressedAsState()
+    return graphicsLayer {
+        val scale = if (pressed) 0.96f else 1f
+        scaleX = scale
+        scaleY = scale
+    }
+}
 
 /**
  * Home's load-failure banner.
@@ -124,6 +167,12 @@ fun HomeScreen(
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
     val mostPlayed by viewModel.mostPlayed.collectAsState()
     val homeLoadFailed by viewModel.homeLoadFailed.collectAsState()
+
+    // What the equalizer language needs: whether sound is on, and which track
+    // it is on for. Collected once here and handed down — reading them inside
+    // each card would give every card its own subscription.
+    val isPlaying by viewModel.isPlaying.collectAsState()
+    val currentTrackState by viewModel.currentTrack.collectAsState()
 
     // Home renders songs too, so the long-press menu's "Add to playlist" needs
     // the same screen-level dialog state the other track lists already keep.
@@ -229,7 +278,7 @@ fun HomeScreen(
             // ── Featured playlists from JioSaavn (browse content) ───────────
             if (featured.isNotEmpty()) {
                 item(key = "featured") {
-                    SectionHeading("Recommended playlists")
+                    SectionHeading("Recommended playlists", isPlaying = isPlaying)
                     TileShelf(featured, viewModel, "featured", onOpenBrowse)
                     Spacer(modifier = Modifier.height(28.dp))
                 }
@@ -238,7 +287,7 @@ fun HomeScreen(
             // ── Recently played (falls back to quick picks until history exists) ──
             if (quickPicks.isNotEmpty()) {
                 item(key = "quick-picks") {
-                    SectionHeading(if (recentlyPlayed.isEmpty()) "Quick picks" else "Recently played")
+                    SectionHeading(if (recentlyPlayed.isEmpty()) "Quick picks" else "Recently played", isPlaying = isPlaying)
 
                     // A horizontal shelf, matching the rows below.
                     //
@@ -254,7 +303,9 @@ fun HomeScreen(
                         contentType = "quick-pick",
                         onAddToPlaylist = { addPlaylistTrack = it },
                         downloadStates = downloadStates,
-                        downloadedIds = downloadedIds
+                        downloadedIds = downloadedIds,
+                        isPlaying = isPlaying,
+                        playingTrackId = currentTrackState?.id
                     )
                     Spacer(modifier = Modifier.height(28.dp))
                 }
@@ -265,7 +316,7 @@ fun HomeScreen(
             // install does not show a second shelf that is a duplicate of the first.
             if (mostPlayed.isNotEmpty()) {
                 item(key = "most-played-heading") {
-                    SectionHeading("Most played")
+                    SectionHeading("Most played", isPlaying = isPlaying)
                 }
 
                 item(key = "most-played-row") {
@@ -275,7 +326,9 @@ fun HomeScreen(
                         contentType = "most-played",
                         onAddToPlaylist = { addPlaylistTrack = it },
                         downloadStates = downloadStates,
-                        downloadedIds = downloadedIds
+                        downloadedIds = downloadedIds,
+                        isPlaying = isPlaying,
+                        playingTrackId = currentTrackState?.id
                     )
                 }
             }
@@ -284,7 +337,7 @@ fun HomeScreen(
             if (trendingTracks.isNotEmpty()) {
                 item(key = "trending-heading") {
                     Spacer(modifier = Modifier.height(32.dp))
-                    SectionHeading("Trending Songs")
+                    SectionHeading("Trending Songs", isPlaying = isPlaying)
                 }
 
                 item(key = "trending-row") {
@@ -294,7 +347,9 @@ fun HomeScreen(
                         contentType = "trending",
                         onAddToPlaylist = { addPlaylistTrack = it },
                         downloadStates = downloadStates,
-                        downloadedIds = downloadedIds
+                        downloadedIds = downloadedIds,
+                        isPlaying = isPlaying,
+                        playingTrackId = currentTrackState?.id
                     )
                 }
             }
@@ -322,7 +377,7 @@ fun HomeScreen(
 
             if (charts.isNotEmpty()) {
                 item(key = "charts") {
-                    SectionHeading("Top charts")
+                    SectionHeading("Top charts", isPlaying = isPlaying)
                     TileShelf(charts, viewModel, "chart", onOpenBrowse)
                     Spacer(modifier = Modifier.height(28.dp))
                 }
@@ -330,7 +385,7 @@ fun HomeScreen(
 
             if (newReleases.isNotEmpty()) {
                 item(key = "new-releases") {
-                    SectionHeading("New releases")
+                    SectionHeading("New releases", isPlaying = isPlaying)
                     TileShelf(newReleases, viewModel, "new-release", onOpenBrowse)
                     Spacer(modifier = Modifier.height(28.dp))
                 }
@@ -338,7 +393,7 @@ fun HomeScreen(
 
             if (throwback.isNotEmpty()) {
                 item(key = "throwback") {
-                    SectionHeading("Throwback")
+                    SectionHeading("Throwback", isPlaying = isPlaying)
                     TileShelf(throwback, viewModel, "throwback", onOpenBrowse)
                     Spacer(modifier = Modifier.height(28.dp))
                 }
@@ -348,14 +403,16 @@ fun HomeScreen(
             // to discard. Real songs with real streams — see NewReleaseRows.
             if (newSongs.isNotEmpty()) {
                 item(key = "new-songs") {
-                    SectionHeading("New songs")
+                    SectionHeading("New songs", isPlaying = isPlaying)
                     TrackShelf(
                         tracks = newSongs,
                         viewModel = viewModel,
                         contentType = "new-song",
                         onAddToPlaylist = { addPlaylistTrack = it },
                         downloadStates = downloadStates,
-                        downloadedIds = downloadedIds
+                        downloadedIds = downloadedIds,
+                        isPlaying = isPlaying,
+                        playingTrackId = currentTrackState?.id
                     )
                     Spacer(modifier = Modifier.height(28.dp))
                 }
@@ -381,14 +438,16 @@ fun HomeScreen(
             // — the ViewModel empties them, and the `isNotEmpty` guard drops the rows.
             if (youTubeTop.isNotEmpty()) {
                 item(key = "yt-top") {
-                    SectionHeading("YouTube Music top songs")
+                    SectionHeading("YouTube Music top songs", isPlaying = isPlaying)
                     TrackShelf(
                         tracks = youTubeTop,
                         viewModel = viewModel,
                         contentType = "yt-top",
                         onAddToPlaylist = { addPlaylistTrack = it },
                         downloadStates = downloadStates,
-                        downloadedIds = downloadedIds
+                        downloadedIds = downloadedIds,
+                        isPlaying = isPlaying,
+                        playingTrackId = currentTrackState?.id
                     )
                     Spacer(modifier = Modifier.height(28.dp))
                 }
@@ -396,14 +455,16 @@ fun HomeScreen(
 
             if (youTubeHipHop.isNotEmpty()) {
                 item(key = "yt-hip-hop") {
-                    SectionHeading("YouTube Music hip-hop")
+                    SectionHeading("YouTube Music hip-hop", isPlaying = isPlaying)
                     TrackShelf(
                         tracks = youTubeHipHop,
                         viewModel = viewModel,
                         contentType = "yt-hip-hop",
                         onAddToPlaylist = { addPlaylistTrack = it },
                         downloadStates = downloadStates,
-                        downloadedIds = downloadedIds
+                        downloadedIds = downloadedIds,
+                        isPlaying = isPlaying,
+                        playingTrackId = currentTrackState?.id
                     )
                     Spacer(modifier = Modifier.height(28.dp))
                 }
@@ -441,7 +502,9 @@ private fun TrackShelf(
     contentType: String,
     onAddToPlaylist: (Track) -> Unit,
     downloadStates: Map<String, DownloadManager.State>,
-    downloadedIds: Set<String>
+    downloadedIds: Set<String>,
+    isPlaying: Boolean,
+    playingTrackId: String?
 ) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(HomeCardGap)) {
         itemsIndexed(
@@ -455,7 +518,9 @@ private fun TrackShelf(
                 onClick = { viewModel.playTrack(track, tracks) },
                 onAddToPlaylist = { onAddToPlaylist(track) },
                 downloadState = downloadStates[track.id],
-                isDownloaded = track.id in downloadedIds
+                isDownloaded = track.id in downloadedIds,
+                isPlaying = isPlaying && track.id == playingTrackId,
+                accentColor = MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -514,6 +579,7 @@ private fun TileShelf(
             key = { index, tile -> "${tile.id}#$index" },
             contentType = { _, _ -> contentType }
         ) { _, tile ->
+            val tileInteraction = remember { MutableInteractionSource() }
             Column(
                 modifier = Modifier.width(HomeCardWidth),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -523,7 +589,10 @@ private fun TileShelf(
                         viewModel.loadBrowsePlaylist(tile)
                         onOpen()
                     },
-                    modifier = Modifier.size(HomeCardWidth),
+                    modifier = Modifier
+                        .size(HomeCardWidth)
+                        .pressScale(tileInteraction),
+                    interactionSource = tileInteraction,
                     shape = RoundedCornerShape(HomeCardCorner)
                 ) {
                     TrackArtwork(
@@ -568,9 +637,13 @@ private fun ChipShelf(
             key = { it.second },
             contentType = { contentType }
         ) { (name, _) ->
+            val chipInteraction = remember { MutableInteractionSource() }
             Card(
                 onClick = { onOpen(name) },
-                modifier = Modifier.size(HomeCardWidth),
+                modifier = Modifier
+                    .size(HomeCardWidth)
+                    .pressScale(chipInteraction),
+                interactionSource = chipInteraction,
                 shape = RoundedCornerShape(HomeCardCorner),
                 colors = CardDefaults.cardColors(containerColor = AuraCardStrong)
             ) {
@@ -649,9 +722,22 @@ fun HomeTrackCard(
     onClick: () -> Unit,
     onAddToPlaylist: (() -> Unit)? = null,
     downloadState: DownloadManager.State? = null,
-    isDownloaded: Boolean = false
+    isDownloaded: Boolean = false,
+    isPlaying: Boolean = false,
+    accentColor: Color = AuraViolet
 ) {
     val menuOpen = remember { mutableStateOf(false) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val haptics = LocalHapticFeedback.current
+
+    // The active card's border fades in and out with playback state instead of
+    // popping. `animateColorAsState` is the stack guideline's own answer for a
+    // tint change; Motion.Quick is this app's "small state change" token.
+    val borderColor by animateColorAsState(
+        targetValue = if (isPlaying) accentColor else Color.Transparent,
+        animationSpec = tween(Motion.Quick),
+        label = "nowPlayingBorder"
+    )
 
     Column(
         modifier = Modifier.width(HomeCardWidth),
@@ -661,10 +747,19 @@ fun HomeTrackCard(
             Card(
                 modifier = Modifier
                     .size(HomeCardWidth)
+                    .pressScale(interactionSource)
                     .combinedClickable(
+                        interactionSource = interactionSource,
                         role = Role.Button,
                         onClick = onClick,
-                        onLongClick = { menuOpen.value = true }
+                        onLongClick = {
+                            // Long-press opens a menu; a light tick marks the
+                            // moment the press "took", per the touch-feedback
+                            // guidance (haptics for confirmations, not for
+                            // every tap).
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            menuOpen.value = true
+                        }
                     ),
                 shape = RoundedCornerShape(HomeCardCorner)
             ) {
@@ -674,7 +769,48 @@ fun HomeTrackCard(
                     cornerRadius = 0.dp,
                     contentDescription = track.title
                 )
+
+                // The same status, stated where the artwork is: a translucent
+                // fill plus a mini equalizer, exactly the language a music app
+                // is expected to speak. Fades with the border, so the card
+                // never flashes between states.
+                AnimatedContent(
+                    targetState = isPlaying,
+                    transitionSpec = {
+                        fadeIn(tween(Motion.Quick)) togetherWith fadeOut(tween(Motion.Quick))
+                    },
+                    label = "nowPlayingOverlay"
+                ) { playing ->
+                    if (playing) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.35f))
+                        ) {
+                            EqualizerBars(
+                                playing = true,
+                                barColor = accentColor,
+                                maxBarHeight = 16.dp,
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(8.dp)
+                            )
+                        }
+                    }
+                }
             }
+
+            // Raised outline around the artwork — the card is dark glass, so a
+            // border must sit above the fill to read against the artwork.
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .border(
+                        width = 2.dp,
+                        color = borderColor,
+                        shape = RoundedCornerShape(HomeCardCorner)
+                    )
+            )
 
             TrackContextMenu(
                 expanded = menuOpen.value,

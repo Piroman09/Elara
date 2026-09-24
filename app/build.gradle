@@ -126,6 +126,15 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.15 (build 16) — 2026-09-24. Home speaks the one visual language a
+        // music app is expected to speak. Section headings grow a small
+        // equalizer while sound is on (draw-phase only, frozen when the user
+        // disables system animations); the playing card gets an accent border
+        // and a scrim + mini equalizer over its artwork, both fading on
+        // Motion.Quick; every tile now scales down slightly while pressed and
+        // long-press ticks haptically before opening the menu. No layout
+        // metrics changed — cards, shelves and spacing are exactly as before.
+        //
         // 1.14 (build 15) — 2026-09-24. Home gained pull-to-refresh — the
         // gesture the 1.11 entry said the app was missing. It rides the
         // toolchain upgrade: M3 1.4.0's PullToRefreshBox, wired to the trending
@@ -175,8 +184,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 15
-        versionName = "1.14"
+        versionCode = 16
+        versionName = "1.15"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true
