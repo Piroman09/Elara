@@ -112,7 +112,7 @@ fun QueueDrawer(
     // saw a brand-new set of items and had nothing to animate between — the
     // queue snapped on drop. Keying on the track instead (with an occurrence
     // suffix, because the same song can legitimately sit in the queue twice and
-    // duplicate keys would crash) lets `animateItemPlacement` slide the rows.
+    // duplicate keys would crash) lets `animateItem` slide the rows.
     val upcomingKeyed = remember(upcoming) { LazyKeys.withOccurrence(upcoming) { it.id } }
 
     // Drag-to-reorder state (index is relative to `upcoming`)
@@ -272,8 +272,8 @@ fun QueueDrawer(
                                     modifier = Modifier
                                         // Rows slide to their new slot on drop
                                         // and on removal instead of jumping.
-                                        .animateItemPlacement(
-                                            animationSpec = tween(
+                                        .animateItem(
+                                            placementSpec = tween(
                                                 Motion.Standard,
                                                 easing = Motion.StandardEasing
                                             )

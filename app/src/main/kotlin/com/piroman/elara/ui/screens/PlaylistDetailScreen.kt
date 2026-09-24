@@ -189,7 +189,7 @@ fun PlaylistDetailScreen(
     // and a restored backup both store their track list as-is, with no
     // de-duplication — and duplicate keys crash a lazy list outright. The bare
     // index is equally wrong here: reorder mode animates rows with
-    // `animateItemPlacement`, and baking the index into the key makes every row
+    // `animateItem`, and baking the index into the key makes every row
     // look brand new after a drop, so nothing has anything to animate between.
     // Same rule and same reason as QueueDrawer; the loop lives in LazyKeys.
     val displayedKeyed = remember(displayed) { LazyKeys.withOccurrence(displayed) { it.id } }
@@ -477,8 +477,8 @@ fun PlaylistDetailScreen(
                             dragOffsetY = 0f
                         },
                         modifier = Modifier
-                            .animateItemPlacement(
-                                animationSpec = tween(
+                            .animateItem(
+                                placementSpec = tween(
                                     Motion.Standard,
                                     easing = Motion.StandardEasing
                                 )
