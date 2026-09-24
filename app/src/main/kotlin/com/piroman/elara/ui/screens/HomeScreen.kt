@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -171,230 +172,245 @@ fun HomeScreen(
         recentlyPlayed.ifEmpty { trendingTracks }.take(20)
     }
 
-    LazyColumn(
+    // Pull-to-refresh — the gesture the 1.11 changelog said the app was
+    // missing: resume handles staleness, but nothing let the user ask for
+    // newer rows mid-session. `isConnecting` is the trending fetch's in-flight
+    // flag, so the indicator also shows while a resume-driven refresh runs,
+    // which reads as feedback rather than as a stuck spinner.
+    // onRefresh is retryHome, not refreshHomeIfStale: a pull is an explicit
+    // request, and the staleness window exists to spare *fresh* rows a fetch —
+    // the opposite of what a pull is asking for.
+    PullToRefreshBox(
+        isRefreshing = isConnecting,
+        onRefresh = viewModel::retryHome,
         modifier = Modifier
             .fillMaxSize()
             .background(homeGradient)
-            .padding(16.dp)
     ) {
-        item(key = "greeting") {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = greeting,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-                if (isConnecting) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+            item(key = "greeting") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = greeting,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    if (isConnecting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(24.dp))
+            }
+
+            // ── Load-failure banner ──────────────────────────────────────────
+            // Sits above every content row so it is the first thing the eye lands
+            // on, and only appears when the last batch finished with both critical
+            // rows empty — a fetch failure, not a thin catalogue.
+            if (homeLoadFailed) {
+                item(key = "home-error") {
+                    HomeErrorBanner(onRetry = viewModel::retryHome)
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
+            }
+
+            // ── Featured playlists from JioSaavn (browse content) ───────────
+            if (featured.isNotEmpty()) {
+                item(key = "featured") {
+                    SectionHeading("Recommended playlists")
+                    TileShelf(featured, viewModel, "featured", onOpenBrowse)
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
+            }
+
+            // ── Recently played (falls back to quick picks until history exists) ──
+            if (quickPicks.isNotEmpty()) {
+                item(key = "quick-picks") {
+                    SectionHeading(if (recentlyPlayed.isEmpty()) "Quick picks" else "Recently played")
+
+                    // A horizontal shelf, matching the rows below.
+                    //
+                    // This used to be a 2-column grid of wide 64 dp tiles, which
+                    // could only ever show six songs — three rows and the page was
+                    // out of screen — so the remaining history was unreachable, and
+                    // every extra row pushed Trending further down. A row scrolls
+                    // sideways instead, so all 20 entries are reachable at a fixed
+                    // height.
+                    TrackShelf(
+                        tracks = quickPicks,
+                        viewModel = viewModel,
+                        contentType = "quick-pick",
+                        onAddToPlaylist = { addPlaylistTrack = it },
+                        downloadStates = downloadStates,
+                        downloadedIds = downloadedIds
+                    )
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
+            }
+
+            // ── Most played ─────────────────────────────────────────────────
+            // Only appears once something has been played at least twice, so a fresh
+            // install does not show a second shelf that is a duplicate of the first.
+            if (mostPlayed.isNotEmpty()) {
+                item(key = "most-played-heading") {
+                    SectionHeading("Most played")
+                }
+
+                item(key = "most-played-row") {
+                    TrackShelf(
+                        tracks = mostPlayed,
+                        viewModel = viewModel,
+                        contentType = "most-played",
+                        onAddToPlaylist = { addPlaylistTrack = it },
+                        downloadStates = downloadStates,
+                        downloadedIds = downloadedIds
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(24.dp))
-        }
 
-        // ── Load-failure banner ──────────────────────────────────────────
-        // Sits above every content row so it is the first thing the eye lands
-        // on, and only appears when the last batch finished with both critical
-        // rows empty — a fetch failure, not a thin catalogue.
-        if (homeLoadFailed) {
-            item(key = "home-error") {
-                HomeErrorBanner(onRetry = viewModel::retryHome)
-                Spacer(modifier = Modifier.height(28.dp))
-            }
-        }
+            // ── Trending Songs (per Music Source setting) ───────────────────
+            if (trendingTracks.isNotEmpty()) {
+                item(key = "trending-heading") {
+                    Spacer(modifier = Modifier.height(32.dp))
+                    SectionHeading("Trending Songs")
+                }
 
-        // ── Featured playlists from JioSaavn (browse content) ───────────
-        if (featured.isNotEmpty()) {
-            item(key = "featured") {
-                SectionHeading("Recommended playlists")
-                TileShelf(featured, viewModel, "featured", onOpenBrowse)
-                Spacer(modifier = Modifier.height(28.dp))
-            }
-        }
-
-        // ── Recently played (falls back to quick picks until history exists) ──
-        if (quickPicks.isNotEmpty()) {
-            item(key = "quick-picks") {
-                SectionHeading(if (recentlyPlayed.isEmpty()) "Quick picks" else "Recently played")
-
-                // A horizontal shelf, matching the rows below.
-                //
-                // This used to be a 2-column grid of wide 64 dp tiles, which
-                // could only ever show six songs — three rows and the page was
-                // out of screen — so the remaining history was unreachable, and
-                // every extra row pushed Trending further down. A row scrolls
-                // sideways instead, so all 20 entries are reachable at a fixed
-                // height.
-                TrackShelf(
-                    tracks = quickPicks,
-                    viewModel = viewModel,
-                    contentType = "quick-pick",
-                    onAddToPlaylist = { addPlaylistTrack = it },
-                    downloadStates = downloadStates,
-                    downloadedIds = downloadedIds
-                )
-                Spacer(modifier = Modifier.height(28.dp))
-            }
-        }
-
-        // ── Most played ─────────────────────────────────────────────────
-        // Only appears once something has been played at least twice, so a fresh
-        // install does not show a second shelf that is a duplicate of the first.
-        if (mostPlayed.isNotEmpty()) {
-            item(key = "most-played-heading") {
-                SectionHeading("Most played")
+                item(key = "trending-row") {
+                    TrackShelf(
+                        tracks = trendingTracks,
+                        viewModel = viewModel,
+                        contentType = "trending",
+                        onAddToPlaylist = { addPlaylistTrack = it },
+                        downloadStates = downloadStates,
+                        downloadedIds = downloadedIds
+                    )
+                }
             }
 
-            item(key = "most-played-row") {
-                TrackShelf(
-                    tracks = mostPlayed,
-                    viewModel = viewModel,
-                    contentType = "most-played",
-                    onAddToPlaylist = { addPlaylistTrack = it },
-                    downloadStates = downloadStates,
-                    downloadedIds = downloadedIds
-                )
-            }
-        }
+            // ── The four discovery rows ────────────────────────────────────
+            //
+            // Appended below everything that was already here rather than slotted in
+            // above it. That is deliberate: it means not one existing row moves, so a
+            // user who scrolls to their Recently played finds it exactly where it was
+            // and the only difference is new content further down.
+            //
+            // Every row except categories is `if (isNotEmpty())`, so a failed or empty
+            // fetch removes the row instead of leaving a heading over nothing — which
+            // is also why each row carries its own section key. Categories needs no
+            // guard: [HomeCategories] is a constant, so the row always has tiles.
 
-        // ── Trending Songs (per Music Source setting) ───────────────────
-        if (trendingTracks.isNotEmpty()) {
-            item(key = "trending-heading") {
+            // Browse categories. No feed backs these on this host (see [HomeCategories]),
+            // so a tile is a search for its own name.
+            item(key = "categories") {
                 Spacer(modifier = Modifier.height(32.dp))
-                SectionHeading("Trending Songs")
-            }
-
-            item(key = "trending-row") {
-                TrackShelf(
-                    tracks = trendingTracks,
-                    viewModel = viewModel,
-                    contentType = "trending",
-                    onAddToPlaylist = { addPlaylistTrack = it },
-                    downloadStates = downloadStates,
-                    downloadedIds = downloadedIds
-                )
-            }
-        }
-
-        // ── The four discovery rows ────────────────────────────────────
-        //
-        // Appended below everything that was already here rather than slotted in
-        // above it. That is deliberate: it means not one existing row moves, so a
-        // user who scrolls to their Recently played finds it exactly where it was
-        // and the only difference is new content further down.
-        //
-        // Every row except categories is `if (isNotEmpty())`, so a failed or empty
-        // fetch removes the row instead of leaving a heading over nothing — which
-        // is also why each row carries its own section key. Categories needs no
-        // guard: [HomeCategories] is a constant, so the row always has tiles.
-
-        // Browse categories. No feed backs these on this host (see [HomeCategories]),
-        // so a tile is a search for its own name.
-        item(key = "categories") {
-            Spacer(modifier = Modifier.height(32.dp))
-            SectionHeading("Browse categories")
-            ChipShelf(HomeCategories, "category", onOpenCategory)
-            Spacer(modifier = Modifier.height(28.dp))
-        }
-
-        if (charts.isNotEmpty()) {
-            item(key = "charts") {
-                SectionHeading("Top charts")
-                TileShelf(charts, viewModel, "chart", onOpenBrowse)
+                SectionHeading("Browse categories")
+                ChipShelf(HomeCategories, "category", onOpenCategory)
                 Spacer(modifier = Modifier.height(28.dp))
             }
-        }
 
-        if (newReleases.isNotEmpty()) {
-            item(key = "new-releases") {
-                SectionHeading("New releases")
-                TileShelf(newReleases, viewModel, "new-release", onOpenBrowse)
-                Spacer(modifier = Modifier.height(28.dp))
+            if (charts.isNotEmpty()) {
+                item(key = "charts") {
+                    SectionHeading("Top charts")
+                    TileShelf(charts, viewModel, "chart", onOpenBrowse)
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
             }
-        }
 
-        if (throwback.isNotEmpty()) {
-            item(key = "throwback") {
-                SectionHeading("Throwback")
-                TileShelf(throwback, viewModel, "throwback", onOpenBrowse)
-                Spacer(modifier = Modifier.height(28.dp))
+            if (newReleases.isNotEmpty()) {
+                item(key = "new-releases") {
+                    SectionHeading("New releases")
+                    TileShelf(newReleases, viewModel, "new-release", onOpenBrowse)
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
             }
-        }
 
-        // The other half of the "New releases" feed, which the album filter used
-        // to discard. Real songs with real streams — see NewReleaseRows.
-        if (newSongs.isNotEmpty()) {
-            item(key = "new-songs") {
-                SectionHeading("New songs")
-                TrackShelf(
-                    tracks = newSongs,
-                    viewModel = viewModel,
-                    contentType = "new-song",
-                    onAddToPlaylist = { addPlaylistTrack = it },
-                    downloadStates = downloadStates,
-                    downloadedIds = downloadedIds
-                )
-                Spacer(modifier = Modifier.height(28.dp))
+            if (throwback.isNotEmpty()) {
+                item(key = "throwback") {
+                    SectionHeading("Throwback")
+                    TileShelf(throwback, viewModel, "throwback", onOpenBrowse)
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
             }
-        }
 
-        // Search-backed for the same reason the category row is: the feed mixes
-        // albums, songs and artists, so there is no single thing to open. Reuses
-        // `onOpenCategory`, which sets the query and switches to the search tab.
-        if (trendingSearches.isNotEmpty()) {
-            item(key = "trending-searches") {
-                SectionHeading("Trending searches")
-                ChipShelf(trendingSearches, "search-term", onOpenCategory)
-                Spacer(modifier = Modifier.height(28.dp))
+            // The other half of the "New releases" feed, which the album filter used
+            // to discard. Real songs with real streams — see NewReleaseRows.
+            if (newSongs.isNotEmpty()) {
+                item(key = "new-songs") {
+                    SectionHeading("New songs")
+                    TrackShelf(
+                        tracks = newSongs,
+                        viewModel = viewModel,
+                        contentType = "new-song",
+                        onAddToPlaylist = { addPlaylistTrack = it },
+                        downloadStates = downloadStates,
+                        downloadedIds = downloadedIds
+                    )
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
             }
-        }
 
-        // YouTube Music's two rows. The heading names the source because the
-        // rows are search-backed rather than editorial (see YouTubeMusicRows):
-        // "top songs" is what YouTube Music returns for that query, not a chart
-        // it published, and the second row is a genre from [HomeCategories]
-        // rather than "new songs" — that query returned 2018–2022 releases.
-        // Both are hidden entirely when the Music Source setting is JioSaavn-only
-        // — the ViewModel empties them, and the `isNotEmpty` guard drops the rows.
-        if (youTubeTop.isNotEmpty()) {
-            item(key = "yt-top") {
-                SectionHeading("YouTube Music top songs")
-                TrackShelf(
-                    tracks = youTubeTop,
-                    viewModel = viewModel,
-                    contentType = "yt-top",
-                    onAddToPlaylist = { addPlaylistTrack = it },
-                    downloadStates = downloadStates,
-                    downloadedIds = downloadedIds
-                )
-                Spacer(modifier = Modifier.height(28.dp))
+            // Search-backed for the same reason the category row is: the feed mixes
+            // albums, songs and artists, so there is no single thing to open. Reuses
+            // `onOpenCategory`, which sets the query and switches to the search tab.
+            if (trendingSearches.isNotEmpty()) {
+                item(key = "trending-searches") {
+                    SectionHeading("Trending searches")
+                    ChipShelf(trendingSearches, "search-term", onOpenCategory)
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
             }
-        }
 
-        if (youTubeHipHop.isNotEmpty()) {
-            item(key = "yt-hip-hop") {
-                SectionHeading("YouTube Music hip-hop")
-                TrackShelf(
-                    tracks = youTubeHipHop,
-                    viewModel = viewModel,
-                    contentType = "yt-hip-hop",
-                    onAddToPlaylist = { addPlaylistTrack = it },
-                    downloadStates = downloadStates,
-                    downloadedIds = downloadedIds
-                )
-                Spacer(modifier = Modifier.height(28.dp))
+            // YouTube Music's two rows. The heading names the source because the
+            // rows are search-backed rather than editorial (see YouTubeMusicRows):
+            // "top songs" is what YouTube Music returns for that query, not a chart
+            // it published, and the second row is a genre from [HomeCategories]
+            // rather than "new songs" — that query returned 2018–2022 releases.
+            // Both are hidden entirely when the Music Source setting is JioSaavn-only
+            // — the ViewModel empties them, and the `isNotEmpty` guard drops the rows.
+            if (youTubeTop.isNotEmpty()) {
+                item(key = "yt-top") {
+                    SectionHeading("YouTube Music top songs")
+                    TrackShelf(
+                        tracks = youTubeTop,
+                        viewModel = viewModel,
+                        contentType = "yt-top",
+                        onAddToPlaylist = { addPlaylistTrack = it },
+                        downloadStates = downloadStates,
+                        downloadedIds = downloadedIds
+                    )
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
             }
-        }
 
-        item(key = "bottom-spacer") { Spacer(modifier = Modifier.height(100.dp)) }
+            if (youTubeHipHop.isNotEmpty()) {
+                item(key = "yt-hip-hop") {
+                    SectionHeading("YouTube Music hip-hop")
+                    TrackShelf(
+                        tracks = youTubeHipHop,
+                        viewModel = viewModel,
+                        contentType = "yt-hip-hop",
+                        onAddToPlaylist = { addPlaylistTrack = it },
+                        downloadStates = downloadStates,
+                        downloadedIds = downloadedIds
+                    )
+                    Spacer(modifier = Modifier.height(28.dp))
+                }
+            }
+
+            item(key = "bottom-spacer") { Spacer(modifier = Modifier.height(100.dp)) }
+        }
     }
 
     addPlaylistTrack?.let { track ->

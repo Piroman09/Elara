@@ -126,6 +126,13 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.14 (build 15) — 2026-09-24. Home gained pull-to-refresh — the
+        // gesture the 1.11 entry said the app was missing. It rides the
+        // toolchain upgrade: M3 1.4.0's PullToRefreshBox, wired to the trending
+        // fetch's `isConnecting` so a resume-driven refresh also shows the
+        // spinner. The pull calls `retryHome`, not `refreshHomeIfStale` — a
+        // pull is an explicit request and must not be declined for freshness.
+        //
         // 1.13 (build 14) — 2026-09-24. Home now survives a failed load.
         // Two silent failure modes fixed:
         //
@@ -168,8 +175,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 14
-        versionName = "1.13"
+        versionCode = 15
+        versionName = "1.14"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true
