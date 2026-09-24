@@ -23,6 +23,16 @@ class TrendingCache private constructor(context: Context) {
         private const val KEY_TIMESTAMP = "trending_cached_timestamp"
         private const val KEY_TRACKS_JSON = "trending_cached_tracks"
 
+        /**
+         * Upper bound on what the cache persists.
+         *
+         * The cache backs Home's trending row on a failed fetch — not an
+         * archive. The largest feed it can hold is a full API page (30
+         * tracks); 40 leaves margin without letting the prefs file grow with
+         * every differently-sized response.
+         */
+        private const val MAX_CACHED_TRACKS = 40
+
         @Volatile
         private var instance: TrendingCache? = null
 
@@ -41,34 +51,13 @@ class TrendingCache private constructor(context: Context) {
     }
 
     /**
-     * Returns cached tracks only if they were saved today (and less than 24 hours ago).
-     * Returns null if cache is empty or from an earlier calendar date, signaling a refresh is needed.
-     */
-    fun getDailyTracks(): List<Track>? {
-        val today = getTodayDateString()
-        val cachedDate = prefs.getString(KEY_DATE, null)
-        val timestamp = prefs.getLong(KEY_TIMESTAMP, 0L)
-        val ageMs = System.currentTimeMillis() - timestamp
-
-        // Expire if not from today or older than 24 hours
-        if (cachedDate != today || ageMs > 24 * 60 * 60 * 1000L) {
-            Log.d(TAG, "Cache expired (cachedDate=$cachedDate, today=$today, ageMs=$ageMs)")
-            return null
-        }
-
-        val json = prefs.getString(KEY_TRACKS_JSON, null) ?: return null
-        return try {
-            val type = listTypeOf(Track::class.java)
-            val list = gson.fromJson<List<Track>>(json, type)
-            if (list.isNullOrEmpty()) null else list
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed parsing cached tracks: ${e.message}")
-            null
-        }
-    }
-
-    /**
      * Fallback method: returns cached tracks regardless of age (useful if device is offline).
+     *
+     * Age is deliberately ignored here. The cache's consumer is
+     * `TrendingCachePolicy`, which only reaches for it when the *fetch* came
+     * back empty — where "stale songs the user can play" strictly beats "row
+     * gone". A date check here would turn a dead network into an empty row
+     * whenever the last successful fetch was yesterday.
      */
     fun getCachedTracksAnyAge(): List<Track>? {
         val json = prefs.getString(KEY_TRACKS_JSON, null) ?: return null
@@ -87,7 +76,7 @@ class TrendingCache private constructor(context: Context) {
         if (tracks.isEmpty()) return
         try {
             val today = getTodayDateString()
-            val json = gson.toJson(tracks)
+            val json = gson.toJson(tracks.take(MAX_CACHED_TRACKS))
             prefs.edit()
                 .putString(KEY_DATE, today)
                 .putLong(KEY_TIMESTAMP, System.currentTimeMillis())
