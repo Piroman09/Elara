@@ -1,7 +1,7 @@
-package com.aesthetic.spotify.data.source
+package com.piroman.elara.data.source
 
 import android.content.Context
-import com.aesthetic.spotify.data.diagnostics.StartupTiming
+import com.piroman.elara.data.diagnostics.StartupTiming
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 

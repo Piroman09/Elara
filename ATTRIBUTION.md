@@ -2,7 +2,7 @@
 
 ## YouTube Music (InnerTube) source
 
-ELARA's YouTube Music support (`app/src/main/kotlin/com/aesthetic/spotify/data/network/YouTubeMusicApi.kt`)
+ELARA's YouTube Music support (`app/src/main/kotlin/com/piroman/elara/data/network/YouTubeMusicApi.kt`)
 was written **independently** for ELARA against the publicly observable
 InnerTube protocol.
 

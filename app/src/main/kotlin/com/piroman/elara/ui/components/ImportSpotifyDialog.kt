@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.components
+package com.piroman.elara.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -54,15 +54,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aesthetic.spotify.data.playlist.Playlist
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.theme.AuraContainer
-import com.aesthetic.spotify.ui.theme.AuraOutline
-import com.aesthetic.spotify.ui.theme.AuraSuccess
-import com.aesthetic.spotify.ui.theme.AuraSurface
-import com.aesthetic.spotify.ui.theme.AuraError
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
-import com.aesthetic.spotify.ui.theme.SpotifyBrand
+import com.piroman.elara.data.playlist.Playlist
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.theme.AuraContainer
+import com.piroman.elara.ui.theme.AuraOutline
+import com.piroman.elara.ui.theme.AuraSuccess
+import com.piroman.elara.ui.theme.AuraSurface
+import com.piroman.elara.ui.theme.AuraError
+import com.piroman.elara.ui.theme.AuraTextSecondary
+import com.piroman.elara.ui.theme.SpotifyBrand
 import kotlinx.coroutines.launch
 
 

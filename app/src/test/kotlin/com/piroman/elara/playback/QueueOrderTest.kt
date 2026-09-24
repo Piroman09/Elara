@@ -1,6 +1,7 @@
-package com.aesthetic.spotify.playback
+package com.piroman.elara.playback
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -175,6 +176,57 @@ class QueueOrderTest {
         assertEquals(listOf(0), afterClear)
     }
 
+    // ── smartShuffleOrder ─────────────────────────────────────────────────
+
+    @Test
+    fun `smartShuffleOrder pins the cursor first and buckets by score`() {
+        val random = Random(1)
+        // Queue size 5, cursor at index 2. Scores: 0→40, 1→20, 3→10, 4→35
+        val scores = mapOf(0 to 40, 1 to 20, 3 to 10, 4 to 35)
+        val order = QueueOrder.smartShuffleOrder(5, 2, scores, random)
+
+        assertEquals("cursor pinned first", 2, order.first())
+        assertEquals("permutation", (0 until 5).toList(), order.sorted())
+
+        // Skip the cursor (index 2) when inspecting buckets — it has no score.
+        val tail = order.drop(1)
+
+        // High bucket (>=30): indices 0 and 4 — must come before medium/low.
+        val highEnd = tail.indexOfFirst { (scores[it] ?: 0) < 30 }
+        assertTrue("high bucket should exist", highEnd > 0)
+        val highIndices = tail.subList(0, highEnd)
+        assertEquals(setOf(0, 4), highIndices.toSet())
+
+        // Medium bucket (15–29): index 1 — must come after high, before low.
+        val mediumEnd = tail.indexOfFirst { (scores[it] ?: 0) < 15 }
+        val mediumIndices = tail.subList(highEnd, mediumEnd)
+        assertEquals(listOf(1), mediumIndices)
+
+        // Low bucket (<15): index 3 — must be last.
+        val lowIndices = tail.subList(mediumEnd, tail.size)
+        assertEquals(listOf(3), lowIndices)
+    }
+
+    @Test
+    fun `smartShuffleOrder with missing scores treats them as zero`() {
+        val order = QueueOrder.smartShuffleOrder(4, 0, emptyMap(), Random(1))
+        assertEquals(0, order.first())
+        // All remaining indices have score 0 → low bucket.
+        assertEquals((0 until 4).toList(), order.sorted())
+    }
+
+    @Test
+    fun `smartShuffleOrder shuffles within each bucket`() {
+        val random = Random(3)
+        // Three high-scoring tracks; many draws should produce multiple orderings.
+        val scores = mapOf(1 to 50, 2 to 50, 3 to 50)
+        val orders = (1..60).map {
+            QueueOrder.smartShuffleOrder(4, 0, scores, Random(it))
+        }
+        val tails = orders.map { it.subList(1, it.size) }.toSet()
+        assertTrue("expected multiple intra-bucket orderings, got $tails", tails.size > 1)
+    }
+
     // ── the invariant that actually matters ───────────────────────────────
 
     /**
@@ -253,6 +305,76 @@ class QueueOrderTest {
                     (0 until queue.size).toList(), order.sorted()
                 )
             }
+        }
+    }
+
+    // ── previousTarget ────────────────────────────────────────────────────
+
+    @Test
+    fun `previous steps back through the shuffle order, not the queue order`() {
+        // Queue order and shuffle order disagree on purpose: stepping back must
+        // follow the sequence the user actually heard. At position n it lands
+        // on shuffleOrder[n - 1].
+        val order = listOf(3, 0, 2, 1)
+        assertEquals(3, QueueOrder.previousTarget(4, 2, true, order, 1))
+        assertEquals(0, QueueOrder.previousTarget(4, 1, true, order, 2))
+        assertEquals(2, QueueOrder.previousTarget(4, 0, true, order, 3))
+    }
+
+    @Test
+    fun `previous at the head of a shuffle lap restarts instead of guessing`() {
+        // The regression: this used to fall through to cursor - 1, which is a
+        // queue-order neighbour the shuffle had never played.
+        val order = listOf(3, 0, 2, 1)
+        assertNull(QueueOrder.previousTarget(4, 3, true, order, 0))
+    }
+
+    @Test
+    fun `previous restarts at the first track of a sequential queue`() {
+        assertNull(QueueOrder.previousTarget(4, 0, false, emptyList(), 0))
+        assertEquals(0, QueueOrder.previousTarget(4, 1, false, emptyList(), 0))
+    }
+
+    @Test
+    fun `previous ignores a stale shuffle position rather than trusting it`() {
+        val order = listOf(3, 0, 2, 1)
+        // Position past the end of the permutation.
+        assertNull(QueueOrder.previousTarget(4, 3, true, order, 9))
+        // Position that would index a candidate outside the queue.
+        assertNull(QueueOrder.previousTarget(2, 3, true, listOf(3, 0, 2, 1), 1))
+    }
+
+    @Test
+    fun `previous falls back to queue order when shuffle is on but the order is empty`() {
+        // shuffleStateFor is all-or-nothing, but a stale empty permutation must
+        // not strand the button.
+        assertEquals(1, QueueOrder.previousTarget(4, 2, true, emptyList(), 0))
+    }
+
+    // ── nextLapPosition ───────────────────────────────────────────────────
+
+    @Test
+    fun `a new lap starts at the entry after the pinned one`() {
+        assertEquals(1, QueueOrder.nextLapPosition(listOf(3, 0, 2, 1)))
+    }
+
+    @Test
+    fun `a single-track lap starts at that track so repeat-all still loops`() {
+        // The regression: this used to yield no target at all, so repeat-all on
+        // a one-track queue stopped playback instead of repeating it.
+        assertEquals(0, QueueOrder.nextLapPosition(listOf(0)))
+    }
+
+    @Test
+    fun `every lap position is a valid index into the lap`() {
+        for (size in 1..12) {
+            val order = QueueOrder.shuffleOrder(size, 0, Random(size))
+            val lap = QueueOrder.nextLapPosition(order)
+            assertTrue("size $size produced lap $lap", lap in order.indices)
+            // Position 0 holds the just-played entry. Only a one-entry lap may
+            // start there, because there is nowhere else to go.
+            val expected = if (size > 1) 1 else 0
+            assertEquals("size $size: lap should be $expected", expected, lap)
         }
     }
 }

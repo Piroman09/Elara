@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.components
+package com.piroman.elara.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -59,17 +59,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.playback.RepeatMode
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.theme.AuraBg
-import com.aesthetic.spotify.ui.theme.AuraCardStrong
-import com.aesthetic.spotify.ui.theme.AuraCardSubtle
-import com.aesthetic.spotify.ui.theme.AuraContainer
-import com.aesthetic.spotify.ui.theme.AuraViolet
-import com.aesthetic.spotify.ui.theme.AuraError
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
-import com.aesthetic.spotify.ui.theme.Motion
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.playback.RepeatMode
+import com.piroman.elara.ui.LazyKeys
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.theme.AuraBg
+import com.piroman.elara.ui.theme.AuraCardStrong
+import com.piroman.elara.ui.theme.AuraCardSubtle
+import com.piroman.elara.ui.theme.AuraContainer
+import com.piroman.elara.ui.theme.AuraViolet
+import com.piroman.elara.ui.theme.AuraError
+import com.piroman.elara.ui.theme.AuraTextSecondary
+import com.piroman.elara.ui.theme.Motion
 import kotlin.math.roundToInt
 
 private val RowHeight = 60.dp
@@ -112,14 +113,7 @@ fun QueueDrawer(
     // queue snapped on drop. Keying on the track instead (with an occurrence
     // suffix, because the same song can legitimately sit in the queue twice and
     // duplicate keys would crash) lets `animateItemPlacement` slide the rows.
-    val upcomingKeyed = remember(upcoming) {
-        val seen = HashMap<String, Int>()
-        upcoming.map { track ->
-            val occurrence = seen.getOrDefault(track.id, 0)
-            seen[track.id] = occurrence + 1
-            track to "${track.id}#$occurrence"
-        }
-    }
+    val upcomingKeyed = remember(upcoming) { LazyKeys.withOccurrence(upcoming) { it.id } }
 
     // Drag-to-reorder state (index is relative to `upcoming`)
     var dragIndex by remember { mutableStateOf<Int?>(null) }

@@ -1,6 +1,5 @@
-package com.aesthetic.spotify.ui.screens
+package com.piroman.elara.ui.screens
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -8,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,20 +18,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aesthetic.spotify.data.download.DownloadManager
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.components.AddToPlaylistDialog
-import com.aesthetic.spotify.ui.components.TrackArtwork
-import com.aesthetic.spotify.ui.components.TrackContextMenu
-import com.aesthetic.spotify.ui.theme.AuraBg
-import com.aesthetic.spotify.ui.theme.AuraHomeGlow
-import com.aesthetic.spotify.ui.theme.AuraCard
-import com.aesthetic.spotify.ui.theme.AuraCardBorder
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
-import com.aesthetic.spotify.data.model.Track
+import com.piroman.elara.data.download.DownloadManager
+import com.piroman.elara.data.repository.MusicRepository
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.LazyKeys
+import com.piroman.elara.ui.components.AddToPlaylistDialog
+import com.piroman.elara.ui.components.SectionHeading
+import com.piroman.elara.ui.components.TrackArtwork
+import com.piroman.elara.ui.components.TrackContextMenu
+import com.piroman.elara.ui.theme.AuraBg
+import com.piroman.elara.ui.theme.AuraCardStrong
+import com.piroman.elara.ui.theme.AuraHomeGlow
+import com.piroman.elara.ui.theme.AuraTextSecondary
+import com.piroman.elara.ui.theme.AuraViolet
+import com.piroman.elara.data.model.Track
 
 /**
  * Height of the purple glow at the top of Home, in dp.
@@ -43,25 +47,51 @@ import com.aesthetic.spotify.data.model.Track
  */
 private val HomeGlowHeight = 320.dp
 
-private val QuickPickShape = RoundedCornerShape(14.dp)
+/**
+ * The card metrics every shelf on Home shares.
+ *
+ * These were four separate literals (150 dp card, 150 dp artwork, 16 dp gap,
+ * 10 dp radius) sprinkled across the featured row and [HomeTrackCard]. Naming
+ * them is what lets the featured row and the song shelves be the *same* card
+ * shape — which is the point of the redesign: the reference screen makes no
+ * visual distinction between "an editorial playlist" and "a song", it is one
+ * tile repeated down the page.
+ *
+ * [HomeCardWidth] is 136 dp rather than 150 dp so a little over two cards are
+ * visible at 360 dp of screen width. That third sliver is doing real work — it
+ * is what tells the eye the row scrolls sideways. At 150 dp only two fit
+ * exactly and the row reads as a static grid.
+ */
+private val HomeCardWidth = 136.dp
+private val HomeCardGap = 14.dp
+private val HomeCardCorner = 12.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     viewModel: MainViewModel,
-    onOpenBrowse: () -> Unit = {}
+    onOpenBrowse: () -> Unit = {},
+    onOpenCategory: (String) -> Unit = {}
 ) {
     val trendingTracks by viewModel.trendingTracks.collectAsState()
     val isConnecting by viewModel.isConnecting.collectAsState()
     val featured by viewModel.featuredPlaylists.collectAsState()
+    val charts by viewModel.charts.collectAsState()
+    val throwback by viewModel.throwback.collectAsState()
+    val newReleases by viewModel.newReleases.collectAsState()
+    val newSongs by viewModel.newSongs.collectAsState()
+    val trendingSearches by viewModel.trendingSearches.collectAsState()
+    val youTubeTop by viewModel.youTubeTop.collectAsState()
+    val youTubeHipHop by viewModel.youTubeHipHop.collectAsState()
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
+    val mostPlayed by viewModel.mostPlayed.collectAsState()
 
     // Home renders songs too, so the long-press menu's "Add to playlist" needs
     // the same screen-level dialog state the other track lists already keep.
     var addPlaylistTrack by remember { mutableStateOf<Track?>(null) }
 
     // Collected once for the whole screen, not once per card — same rule as
-    // SearchScreen. Reading these inside QuickPickItem/TrendingCard would give
+    // SearchScreen. Reading these inside HomeTrackCard would give
     // every visible card its own subscription to the download flow and
     // re-compose it on every progress tick.
     //
@@ -95,8 +125,12 @@ fun HomeScreen(
         )
     }
 
+    // Every song the history holds, not the first six. `PlayHistoryManager`
+    // already caps itself at MAX_ENTRIES (20), so this ceiling only ever bites
+    // the `trendingTracks` fallback below — that is a full API page and we do
+    // not want an unbounded shelf.
     val quickPicks = remember(recentlyPlayed, trendingTracks) {
-        recentlyPlayed.ifEmpty { trendingTracks }.take(6)
+        recentlyPlayed.ifEmpty { trendingTracks }.take(20)
     }
 
     LazyColumn(
@@ -132,48 +166,7 @@ fun HomeScreen(
         if (featured.isNotEmpty()) {
             item(key = "featured") {
                 SectionHeading("Recommended playlists")
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(
-                        items = featured,
-                        key = { it.id },
-                        contentType = { "featured" }
-                    ) { fp ->
-                        Card(
-                            onClick = {
-                                viewModel.loadBrowsePlaylist(fp)
-                                onOpenBrowse()
-                            },
-                            modifier = Modifier.size(150.dp, 190.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = CardDefaults.cardColors(containerColor = AuraCard)
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                TrackArtwork(
-                                    url = fp.image,
-                                    modifier = Modifier.fillMaxWidth().height(120.dp),
-                                    cornerRadius = 10.dp,
-                                    contentDescription = fp.title
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    fp.title,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 13.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    fp.subtitle,
-                                    color = AuraTextSecondary,
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
+                TileShelf(featured, viewModel, "featured", onOpenBrowse)
                 Spacer(modifier = Modifier.height(28.dp))
             }
         }
@@ -183,32 +176,43 @@ fun HomeScreen(
             item(key = "quick-picks") {
                 SectionHeading(if (recentlyPlayed.isEmpty()) "Quick picks" else "Recently played")
 
-                // A plain Column of Rows, not a LazyVerticalGrid: the grid used
-                // to be nested inside this LazyColumn item behind a hardcoded
-                // 200 dp height, which meant a second scroll container, a
-                // fixed-height guess that clipped long titles, and no natural
-                // measurement. Six items in two columns don't need recycling.
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    quickPicks.chunked(2).forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            row.forEach { track ->
-                                QuickPickItem(
-                                    track = track,
-                                    viewModel = viewModel,
-                                    modifier = Modifier.weight(1f),
-                                    onClick = { viewModel.playTrack(track, quickPicks) },
-                                    onAddToPlaylist = { addPlaylistTrack = track },
-                                    downloadState = downloadStates[track.id],
-                                    isDownloaded = track.id in downloadedIds
-                                )
-                            }
-                            // Odd item out keeps half width instead of
-                            // stretching across the whole row.
-                            if (row.size == 1) Spacer(modifier = Modifier.weight(1f))
-                        }
-                    }
-                }
+                // A horizontal shelf, matching the rows below.
+                //
+                // This used to be a 2-column grid of wide 64 dp tiles, which
+                // could only ever show six songs — three rows and the page was
+                // out of screen — so the remaining history was unreachable, and
+                // every extra row pushed Trending further down. A row scrolls
+                // sideways instead, so all 20 entries are reachable at a fixed
+                // height.
+                TrackShelf(
+                    tracks = quickPicks,
+                    viewModel = viewModel,
+                    contentType = "quick-pick",
+                    onAddToPlaylist = { addPlaylistTrack = it },
+                    downloadStates = downloadStates,
+                    downloadedIds = downloadedIds
+                )
                 Spacer(modifier = Modifier.height(28.dp))
+            }
+        }
+
+        // ── Most played ─────────────────────────────────────────────────
+        // Only appears once something has been played at least twice, so a fresh
+        // install does not show a second shelf that is a duplicate of the first.
+        if (mostPlayed.isNotEmpty()) {
+            item(key = "most-played-heading") {
+                SectionHeading("Most played")
+            }
+
+            item(key = "most-played-row") {
+                TrackShelf(
+                    tracks = mostPlayed,
+                    viewModel = viewModel,
+                    contentType = "most-played",
+                    onAddToPlaylist = { addPlaylistTrack = it },
+                    downloadStates = downloadStates,
+                    downloadedIds = downloadedIds
+                )
             }
         }
 
@@ -220,22 +224,124 @@ fun HomeScreen(
             }
 
             item(key = "trending-row") {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    items(
-                        items = trendingTracks,
-                        key = { it.id },
-                        contentType = { "trending" }
-                    ) { track ->
-                        TrendingCard(
-                            track = track,
-                            viewModel = viewModel,
-                            onClick = { viewModel.playTrack(track, trendingTracks) },
-                            onAddToPlaylist = { addPlaylistTrack = track },
-                            downloadState = downloadStates[track.id],
-                            isDownloaded = track.id in downloadedIds
-                        )
-                    }
-                }
+                TrackShelf(
+                    tracks = trendingTracks,
+                    viewModel = viewModel,
+                    contentType = "trending",
+                    onAddToPlaylist = { addPlaylistTrack = it },
+                    downloadStates = downloadStates,
+                    downloadedIds = downloadedIds
+                )
+            }
+        }
+
+        // ── The four discovery rows ────────────────────────────────────
+        //
+        // Appended below everything that was already here rather than slotted in
+        // above it. That is deliberate: it means not one existing row moves, so a
+        // user who scrolls to their Recently played finds it exactly where it was
+        // and the only difference is new content further down.
+        //
+        // Every row except categories is `if (isNotEmpty())`, so a failed or empty
+        // fetch removes the row instead of leaving a heading over nothing — which
+        // is also why each row carries its own section key. Categories needs no
+        // guard: [HomeCategories] is a constant, so the row always has tiles.
+
+        // Browse categories. No feed backs these on this host (see [HomeCategories]),
+        // so a tile is a search for its own name.
+        item(key = "categories") {
+            Spacer(modifier = Modifier.height(32.dp))
+            SectionHeading("Browse categories")
+            ChipShelf(HomeCategories, "category", onOpenCategory)
+            Spacer(modifier = Modifier.height(28.dp))
+        }
+
+        if (charts.isNotEmpty()) {
+            item(key = "charts") {
+                SectionHeading("Top charts")
+                TileShelf(charts, viewModel, "chart", onOpenBrowse)
+                Spacer(modifier = Modifier.height(28.dp))
+            }
+        }
+
+        if (newReleases.isNotEmpty()) {
+            item(key = "new-releases") {
+                SectionHeading("New releases")
+                TileShelf(newReleases, viewModel, "new-release", onOpenBrowse)
+                Spacer(modifier = Modifier.height(28.dp))
+            }
+        }
+
+        if (throwback.isNotEmpty()) {
+            item(key = "throwback") {
+                SectionHeading("Throwback")
+                TileShelf(throwback, viewModel, "throwback", onOpenBrowse)
+                Spacer(modifier = Modifier.height(28.dp))
+            }
+        }
+
+        // The other half of the "New releases" feed, which the album filter used
+        // to discard. Real songs with real streams — see NewReleaseRows.
+        if (newSongs.isNotEmpty()) {
+            item(key = "new-songs") {
+                SectionHeading("New songs")
+                TrackShelf(
+                    tracks = newSongs,
+                    viewModel = viewModel,
+                    contentType = "new-song",
+                    onAddToPlaylist = { addPlaylistTrack = it },
+                    downloadStates = downloadStates,
+                    downloadedIds = downloadedIds
+                )
+                Spacer(modifier = Modifier.height(28.dp))
+            }
+        }
+
+        // Search-backed for the same reason the category row is: the feed mixes
+        // albums, songs and artists, so there is no single thing to open. Reuses
+        // `onOpenCategory`, which sets the query and switches to the search tab.
+        if (trendingSearches.isNotEmpty()) {
+            item(key = "trending-searches") {
+                SectionHeading("Trending searches")
+                ChipShelf(trendingSearches, "search-term", onOpenCategory)
+                Spacer(modifier = Modifier.height(28.dp))
+            }
+        }
+
+        // YouTube Music's two rows. The heading names the source because the
+        // rows are search-backed rather than editorial (see YouTubeMusicRows):
+        // "top songs" is what YouTube Music returns for that query, not a chart
+        // it published, and the second row is a genre from [HomeCategories]
+        // rather than "new songs" — that query returned 2018–2022 releases.
+        // Both are hidden entirely when the Music Source setting is JioSaavn-only
+        // — the ViewModel empties them, and the `isNotEmpty` guard drops the rows.
+        if (youTubeTop.isNotEmpty()) {
+            item(key = "yt-top") {
+                SectionHeading("YouTube Music top songs")
+                TrackShelf(
+                    tracks = youTubeTop,
+                    viewModel = viewModel,
+                    contentType = "yt-top",
+                    onAddToPlaylist = { addPlaylistTrack = it },
+                    downloadStates = downloadStates,
+                    downloadedIds = downloadedIds
+                )
+                Spacer(modifier = Modifier.height(28.dp))
+            }
+        }
+
+        if (youTubeHipHop.isNotEmpty()) {
+            item(key = "yt-hip-hop") {
+                SectionHeading("YouTube Music hip-hop")
+                TrackShelf(
+                    tracks = youTubeHipHop,
+                    viewModel = viewModel,
+                    contentType = "yt-hip-hop",
+                    onAddToPlaylist = { addPlaylistTrack = it },
+                    downloadStates = downloadStates,
+                    downloadedIds = downloadedIds
+                )
+                Spacer(modifier = Modifier.height(28.dp))
             }
         }
 
@@ -251,91 +357,228 @@ fun HomeScreen(
     }
 }
 
+/**
+ * One horizontal shelf of [HomeTrackCard]s. Home has three of these now
+ * (Recently played, Most played, Trending), so the row lives in one place.
+ *
+ * `downloadStates` and `downloadedIds` are passed down rather than read from the
+ * ViewModel inside each card — see the note in [HomeScreen]. Reading them per
+ * card gave every visible card its own flow subscription.
+ *
+ * The key is identity **and** position, never the bare index and not the bare
+ * id. Two of the three shelves are fed by unfiltered API/derived lists that can
+ * legitimately contain the same id twice, and duplicate keys crash a lazy list.
+ */
 @Composable
-private fun SectionHeading(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleLarge,
-        fontWeight = FontWeight.Bold,
-        color = Color.White,
-        modifier = Modifier.padding(bottom = 12.dp)
-    )
+private fun TrackShelf(
+    tracks: List<Track>,
+    viewModel: MainViewModel,
+    contentType: String,
+    onAddToPlaylist: (Track) -> Unit,
+    downloadStates: Map<String, DownloadManager.State>,
+    downloadedIds: Set<String>
+) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(HomeCardGap)) {
+        itemsIndexed(
+            items = tracks,
+            key = { index, track -> "${track.id}#$index" },
+            contentType = { _, _ -> contentType }
+        ) { _, track ->
+            HomeTrackCard(
+                track = track,
+                viewModel = viewModel,
+                onClick = { viewModel.playTrack(track, tracks) },
+                onAddToPlaylist = { onAddToPlaylist(track) },
+                downloadState = downloadStates[track.id],
+                isDownloaded = track.id in downloadedIds
+            )
+        }
+    }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
-@Composable
-fun QuickPickItem(
-    track: Track,
-    viewModel: MainViewModel,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-    onAddToPlaylist: (() -> Unit)? = null,
-    downloadState: DownloadManager.State? = null,
-    isDownloaded: Boolean = false
-) {
-    val menuOpen = remember { mutableStateOf(false) }
+/**
+ * Home's browse categories.
+ *
+ * **There is no category feed behind these.** Probed live 2026-09-21:
+ * `content.getBrowseCategories`, `content.getGenres`, `content.getMoods`,
+ * `content.getLanguages`, `content.getRadio` and `content.getCities` all answer
+ * `{"error":{"code":"INPUT_INVALID","msg":"... is not supported"}}`, so there is
+ * nothing to fetch. A tile therefore runs a *search* for its own name — real
+ * results and real playback, but the list of names is ours rather than the
+ * service's editorial team. That is written here, at the data, because the next
+ * person to touch this will otherwise assume a feed was simply missed.
+ *
+ * Deliberately broad queries. A narrow one ("Arijit Singh") would read as an
+ * artist row and belong somewhere else.
+ */
+private val HomeCategories = listOf(
+    "Romance",
+    "Party",
+    "Workout",
+    "Chill",
+    "Devotional",
+    "Hip-Hop",
+    "Retro",
+    "Sad Songs"
+)
 
-    // The menu is a sibling of the Card, not a child, so it anchors to the whole
-    // tile. (It would not be *clipped* by the Card either way — a DropdownMenu
-    // renders in its own popup window — but anchoring to the tile reads better
-    // than anchoring to whatever happens to be first inside it.)
-    Box(modifier = modifier) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(64.dp)
-                .combinedClickable(
-                    role = Role.Button,
-                    onClick = onClick,
-                    onLongClick = { menuOpen.value = true }
-                ),
-            shape = QuickPickShape,
-            colors = CardDefaults.cardColors(containerColor = AuraCard),
-            border = BorderStroke(1.dp, AuraCardBorder)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Square corners: the Card already clips its content to
-                // QuickPickShape, so rounding here would cut the artwork's inner edge.
-                TrackArtwork(url = track.albumArt, size = 64.dp, cornerRadius = 0.dp)
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 10.dp)
+/**
+ * One horizontal row of [MusicRepository.BrowseTile]s. Featured playlists,
+ * charts and albums all render through this, so the four rows cannot drift.
+ *
+ * Separate from [TrackShelf] because a tile is not a `Track`: there is no
+ * download state, no context menu, and tapping *opens* a collection rather than
+ * playing a song.
+ *
+ * Keys are id **and** position, matching [TrackShelf]. These lists come straight
+ * off the network and nothing guarantees an id is unique within a page — and a
+ * duplicate key crashes a lazy list, which is a crash caused by a cosmetic
+ * problem.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TileShelf(
+    tiles: List<MusicRepository.BrowseTile>,
+    viewModel: MainViewModel,
+    contentType: String,
+    onOpen: () -> Unit
+) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(HomeCardGap)) {
+        itemsIndexed(
+            items = tiles,
+            key = { index, tile -> "${tile.id}#$index" },
+            contentType = { _, _ -> contentType }
+        ) { _, tile ->
+            Column(
+                modifier = Modifier.width(HomeCardWidth),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Card(
+                    onClick = {
+                        viewModel.loadBrowsePlaylist(tile)
+                        onOpen()
+                    },
+                    modifier = Modifier.size(HomeCardWidth),
+                    shape = RoundedCornerShape(HomeCardCorner)
+                ) {
+                    TrackArtwork(
+                        url = tile.image,
+                        modifier = Modifier.fillMaxSize(),
+                        cornerRadius = 0.dp,
+                        contentDescription = tile.title
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                TileLabels(title = tile.title, subtitle = tile.subtitle)
+            }
+        }
+    }
+}
+
+/**
+ * A row of square text chips, shared by both Home chip rows — "Browse categories"
+ * (a constant list) and "Trending searches" (live titles from the service) — so
+ * the two cannot drift apart in size, gap or label treatment.
+ *
+ * A neutral card fill with the name in the accent — deliberately not a
+ * violet-tinted surface. Tinting surfaces violet is the one thing the theme
+ * rejects outright, and eight saturated squares in a row would be exactly that.
+ *
+ * [contentType] is a parameter rather than a constant: the rows recycle different
+ * things, and one shared value would let Lazy reuse a category chip for a search chip.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChipShelf(
+    names: List<String>,
+    contentType: String,
+    onOpen: (String) -> Unit
+) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(HomeCardGap)) {
+        items(
+            // `withOccurrence` rather than the bare name: the trending feed is live
+            // and can legitimately list the same title twice, and duplicate keys
+            // crash a LazyRow.
+            items = LazyKeys.withOccurrence(names) { it },
+            key = { it.second },
+            contentType = { contentType }
+        ) { (name, _) ->
+            Card(
+                onClick = { onOpen(name) },
+                modifier = Modifier.size(HomeCardWidth),
+                shape = RoundedCornerShape(HomeCardCorner),
+                colors = CardDefaults.cardColors(containerColor = AuraCardStrong)
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(10.dp),
+                    contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = track.title,
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = track.artist,
-                        color = AuraTextSecondary,
-                        fontSize = 10.sp,
-                        maxLines = 1,
+                        text = name,
+                        color = AuraViolet,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
             }
         }
-
-        TrackContextMenu(
-            expanded = menuOpen.value,
-            onDismiss = { menuOpen.value = false },
-            track = track,
-            viewModel = viewModel,
-            onAddToPlaylist = onAddToPlaylist,
-            downloadState = downloadState,
-            isDownloaded = isDownloaded
-        )
     }
 }
 
+/**
+ * The two centred lines under a Home tile: the title, then a quieter second line
+ * — the artist for a song, the playlist's own subtitle for a featured card.
+ *
+ * Shared by [HomeTrackCard] and the featured row so the two cannot disagree
+ * about size, weight or alignment. The `fillMaxWidth` on each `Text` is what
+ * makes `TextAlign.Center` mean anything: centring inside a box that has already
+ * shrunk to the text's own width would be a no-op, and the labels would stay
+ * left-aligned to the card edge.
+ */
+@Composable
+private fun TileLabels(title: String, subtitle: String) {
+    Text(
+        text = title,
+        color = Color.White,
+        fontWeight = FontWeight.Bold,
+        fontSize = 12.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth()
+    )
+    Text(
+        text = subtitle,
+        color = AuraTextSecondary,
+        fontSize = 11.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+/**
+ * The [HomeCardWidth] artwork card used by every horizontal shelf on Home —
+ * "Recently played", "Most played" and "Trending Songs".
+ *
+ * Deliberately one composable, not two: the shelves are the same object at
+ * different data, and a second copy is how they drift apart. It used to be
+ * called `TrendingCard`, which stopped being true once Recently played adopted
+ * it. The wide 64 dp tile this replaced is in git history if the list-row shape
+ * is ever wanted back.
+ *
+ * The labels are centred and sit *outside* the artwork box, matching the
+ * reference layout: the artwork is the card, and the text is a caption under it.
+ * `HomeCardWidth` / `HomeCardGap` / `HomeCardCorner` are shared with the
+ * featured row so all four shelves are the same tile.
+ */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun TrendingCard(
+fun HomeTrackCard(
     track: Track,
     viewModel: MainViewModel,
     onClick: () -> Unit,
@@ -345,17 +588,20 @@ fun TrendingCard(
 ) {
     val menuOpen = remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.width(150.dp)) {
+    Column(
+        modifier = Modifier.width(HomeCardWidth),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
         Box {
             Card(
                 modifier = Modifier
-                    .size(150.dp)
+                    .size(HomeCardWidth)
                     .combinedClickable(
                         role = Role.Button,
                         onClick = onClick,
                         onLongClick = { menuOpen.value = true }
                     ),
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(HomeCardCorner)
             ) {
                 TrackArtwork(
                     url = track.albumArt,
@@ -376,20 +622,6 @@ fun TrendingCard(
             )
         }
         Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = track.title,
-            color = Color.White,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontSize = 13.sp
-        )
-        Text(
-            text = track.artist,
-            color = AuraTextSecondary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontSize = 11.sp
-        )
+        TileLabels(title = track.title, subtitle = track.artist)
     }
 }

@@ -1,8 +1,8 @@
-package com.aesthetic.spotify.data.network
+package com.piroman.elara.data.network
 
 import android.util.Base64
 import android.util.Log
-import com.aesthetic.spotify.data.model.LyricLine
+import com.piroman.elara.data.model.LyricLine
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

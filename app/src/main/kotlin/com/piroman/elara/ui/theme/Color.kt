@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.theme
+package com.piroman.elara.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

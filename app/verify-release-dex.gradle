@@ -34,35 +34,39 @@ def proguardFile = file('proguard-rules.pro')
 def requiredProguardDirectives = [
         '-dontobfuscate',
         '-keepattributes Signature',
-        '-keep class com.aesthetic.spotify.data.network.** { *; }',
-        '-keep class com.aesthetic.spotify.data.model.** { *; }',
-        '-keep class com.aesthetic.spotify.data.playlist.Playlist { *; }',
-        '-keep class com.aesthetic.spotify.data.download.DownloadManager$Entry { *; }',
-        '-keep class com.aesthetic.spotify.data.download.DownloadManager$Pending { *; }',
+        '-keep class com.piroman.elara.data.network.** { *; }',
+        '-keep class com.piroman.elara.data.model.** { *; }',
+        '-keep class com.piroman.elara.data.playlist.Playlist { *; }',
+        '-keep class com.piroman.elara.data.download.DownloadManager$Entry { *; }',
+        '-keep class com.piroman.elara.data.download.DownloadManager$Pending { *; }',
+        '-keep class com.piroman.elara.data.history.PlayStat { *; }',
+        '-keep class com.piroman.elara.data.backup.ElaraBackup { *; }',
 ]
 
 // Every type Gson reads or writes, plus the entry points the manifest names.
 // Derived from auditing each `fromJson` call site and each Retrofit endpoint.
 def requiredTypes = [
         // Persisted to disk and read back — losing one loses user data.
-        'com.aesthetic.spotify.data.model.Track',
-        'com.aesthetic.spotify.data.model.Playlist',
-        'com.aesthetic.spotify.data.model.LyricLine',
-        'com.aesthetic.spotify.data.model.VibeCoords',
-        'com.aesthetic.spotify.data.model.MusicSource',
-        'com.aesthetic.spotify.data.model.SafeGson',
-        'com.aesthetic.spotify.data.playlist.Playlist',
-        'com.aesthetic.spotify.data.download.DownloadManager$Entry',
-        'com.aesthetic.spotify.data.download.DownloadManager$Pending',
+        'com.piroman.elara.data.model.Track',
+        'com.piroman.elara.data.model.Playlist',
+        'com.piroman.elara.data.model.LyricLine',
+        'com.piroman.elara.data.model.VibeCoords',
+        'com.piroman.elara.data.model.MusicSource',
+        'com.piroman.elara.data.model.SafeGson',
+        'com.piroman.elara.data.playlist.Playlist',
+        'com.piroman.elara.data.download.DownloadManager$Entry',
+        'com.piroman.elara.data.download.DownloadManager$Pending',
+        'com.piroman.elara.data.history.PlayStat',
+        'com.piroman.elara.data.backup.ElaraBackup',
         // Deserialised by Retrofit's Gson converter. One representative per API.
-        'com.aesthetic.spotify.data.network.JioSong',
-        'com.aesthetic.spotify.data.network.SCTrack',
-        'com.aesthetic.spotify.data.network.LrcLibResult',
-        'com.aesthetic.spotify.data.network.ITunesResult',
+        'com.piroman.elara.data.network.JioSong',
+        'com.piroman.elara.data.network.SCTrack',
+        'com.piroman.elara.data.network.LrcLibResult',
+        'com.piroman.elara.data.network.ITunesResult',
         // Referenced from AndroidManifest.xml, where a keep-rule mistake is fatal.
-        'com.aesthetic.spotify.AuraSonicApp',
-        'com.aesthetic.spotify.MainActivity',
-        'com.aesthetic.spotify.playback.PlaybackService',
+        'com.piroman.elara.AuraSonicApp',
+        'com.piroman.elara.MainActivity',
+        'com.piroman.elara.playback.PlaybackService',
 ]
 
 // Field names Gson needs to find by reflection. A miss here means silent data
@@ -75,6 +79,13 @@ def requiredFields = [
         'data.playlist.Playlist'   : ['id', 'name', 'createdAt', 'tracks'],
         'DownloadManager$Entry'    : ['track', 'path'],
         'DownloadManager$Pending'  : ['downloadId', 'track', 'finalPath'],
+        // Play counts. `count` is the one that matters: lose it and every track
+        // silently reads back as zero plays, so "Most played" empties itself.
+        'data.history.PlayStat'    : ['track', 'count'],
+        // The exported library document. Losing `playStats` or `recentTracks`
+        // here means a restore silently drops them instead of failing.
+        'data.backup.ElaraBackup'  : ['version', 'exportedAt', 'playlists', 'likedTracks',
+                                      'recentTracks', 'playStats', 'musicSource'],
 ]
 
 def requiredEnumConstants = [
@@ -103,6 +114,50 @@ tasks.register('verifyReleaseDex') {
     // and declaring both directions on one pair is a dependency cycle.
     doLast {
         def failures = []
+
+        // --- 0. the anonymous-TypeToken source ban --------------------------
+        // `object : TypeToken<List<T>>() {}.type` resolves T from the anonymous
+        // subclass's generic superclass *signature*. R8 does not preserve those: the
+        // 2026-09-21 release dex held eleven of these subclasses merged into a single
+        // class carrying a single `Signature` attribute, so getGenericSuperclass()
+        // returned the raw type and Gson threw "TypeToken must be created with a type
+        // argument". Every store then read as EMPTY — with the real data still on disk,
+        // 41 KB of playlists in the failing case — and the next save overwrote it.
+        //
+        // `-keepattributes Signature` was ALREADY in proguard-rules.pro and did not
+        // prevent it, which is why this is a source check rather than a rule check.
+        // `listTypeOf(...)` builds the type from Class literals instead, so there is no
+        // signature for R8 to strip.
+        //
+        // This cannot be caught by a unit test: the failure only exists in the
+        // R8-processed release build.
+        def bannedPattern = 'object : TypeToken'
+        def offenders = []
+        def mainSources = file('src/main')
+        if (mainSources.exists()) {
+            mainSources.eachFileRecurse { f ->
+                if (f.isFile() && (f.name.endsWith('.kt') || f.name.endsWith('.java'))) {
+                    f.readLines().eachWithIndex { line, idx ->
+                        def trimmed = line.trim()
+                        // The pattern is named in the KDoc that explains the ban, so
+                        // comment lines are not offenders.
+                        def isComment = trimmed.startsWith('*') ||
+                                trimmed.startsWith('//') ||
+                                trimmed.startsWith('/*')
+                        if (line.contains(bannedPattern) && !isComment) {
+                            offenders << "${f.path}:${idx + 1}"
+                        }
+                    }
+                }
+            }
+        }
+        if (offenders) {
+            failures << "anonymous TypeToken subclass in main sources — R8 merges these and " +
+                    "the generic signature is lost at runtime, so the store reads as empty " +
+                    "and the next save overwrites the user's data. Use listTypeOf(...) " +
+                    "(data/model/SafeGson.kt) instead:\n        " +
+                    offenders.join('\n        ')
+        }
 
         // --- 1. proguard-rules.pro -----------------------------------------
         if (!proguardFile.exists()) {
@@ -180,6 +235,7 @@ tasks.register('verifyReleaseDex') {
         logger.lifecycle("verifyReleaseDex: ${apk.name} (${apk.length()} bytes, " +
                 "${dexBlobs.size()} dex file(s))")
         logger.lifecycle("  proguard rules    : ${requiredProguardDirectives.size()}")
+        logger.lifecycle("  source ban        : no anonymous TypeToken subclass in src/main")
         logger.lifecycle("  required classes  : ${requiredTypes.size()}")
         logger.lifecycle("  required fields   : ${fieldCount}")
         logger.lifecycle("  enum constants    : ${requiredEnumConstants.size()}")

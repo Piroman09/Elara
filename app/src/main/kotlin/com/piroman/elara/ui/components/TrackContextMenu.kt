@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.components
+package com.piroman.elara.ui.components
 
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -18,14 +19,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.aesthetic.spotify.data.download.DownloadManager
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.theme.AuraDownload
-import com.aesthetic.spotify.ui.theme.AuraError
-import com.aesthetic.spotify.ui.theme.AuraMenu
-import com.aesthetic.spotify.ui.theme.AuraTextPrimary
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
+import com.piroman.elara.data.download.DownloadManager
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.theme.AuraDownload
+import com.piroman.elara.ui.theme.AuraError
+import com.piroman.elara.ui.theme.AuraMenu
+import com.piroman.elara.ui.theme.AuraTextPrimary
+import com.piroman.elara.ui.theme.AuraTextSecondary
 
 /**
  * The one track action menu, opened by long-pressing a song or tapping its
@@ -98,6 +99,17 @@ fun TrackContextMenu(
                     if (startedPlaying) "Playing now" else "Added to queue",
                     Toast.LENGTH_SHORT
                 ).show()
+            }
+        )
+
+        DropdownMenuItem(
+            text = { Text("Share", color = AuraTextPrimary) },
+            leadingIcon = {
+                Icon(Icons.Default.Share, contentDescription = null, tint = AuraTextPrimary)
+            },
+            onClick = {
+                onDismiss()
+                viewModel.shareTrack(track)
             }
         )
 

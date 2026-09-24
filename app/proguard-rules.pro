@@ -16,17 +16,21 @@
 # ---------------------------------------------------------------------------
 
 # --- Gson: deserialised API models (fields accessed reflectively) -----------
--keep class com.aesthetic.spotify.data.network.** { *; }
--keep class com.aesthetic.spotify.data.model.** { *; }
+-keep class com.piroman.elara.data.network.** { *; }
+-keep class com.piroman.elara.data.model.** { *; }
 
 # --- Gson: serialised, but living outside data.model ------------------------
 # Found by auditing every `fromJson` call site. Each of these is persisted to
 # disk and read back, so losing a field loses the user's data:
 #   PlaylistManager -> List<Playlist>
 #   DownloadManager -> List<Entry>, List<Pending>
--keep class com.aesthetic.spotify.data.playlist.Playlist { *; }
--keep class com.aesthetic.spotify.data.download.DownloadManager$Entry { *; }
--keep class com.aesthetic.spotify.data.download.DownloadManager$Pending { *; }
+#   PlayHistoryManager -> List<PlayStat>   (play counts, `play_stats` key)
+#   ElaraBackup -> the exported library document the user re-imports
+-keep class com.piroman.elara.data.playlist.Playlist { *; }
+-keep class com.piroman.elara.data.download.DownloadManager$Entry { *; }
+-keep class com.piroman.elara.data.download.DownloadManager$Pending { *; }
+-keep class com.piroman.elara.data.history.PlayStat { *; }
+-keep class com.piroman.elara.data.backup.ElaraBackup { *; }
 
 # --- Gson: generic type resolution -----------------------------------------
 # `object : TypeToken<List<Track>>() {}.type` is resolved from the anonymous

@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.data.model
+package com.piroman.elara.data.model
 
 import com.google.gson.Gson
 import org.junit.Assert.assertEquals

@@ -1,8 +1,8 @@
-package com.aesthetic.spotify.data.network
+package com.piroman.elara.data.network
 
 import android.util.Log
-import com.aesthetic.spotify.data.model.MusicSource
-import com.aesthetic.spotify.data.model.Track
+import com.piroman.elara.data.model.MusicSource
+import com.piroman.elara.data.model.Track
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +44,22 @@ object YouTubeMusicApi {
     private const val UA_ANDROID =
         "com.google.android.youtube/$ANDROID_VERSION (Linux; U; Android 14) gzip"
 
+    /**
+     * WEB_REMIX search filter selecting the **Songs** tab.
+     *
+     * Unfiltered, a search interleaves songs, music videos, albums and artists,
+     * and the video rows carry the upload's packaging instead of a song name
+     * ("Full Video: Yaalalo Yaalalo | Irumudi | Ravi Teja | GV Prakash | …").
+     * That is tolerable inside the search screen, where the user typed something
+     * and expects a mixed list, but it is not tolerable as a Home row title.
+     *
+     * Measured live 2026-09-21: with this filter the same query returned 30 rows,
+     * **all** carrying a `videoId` and a clean `Artist • Album • Duration`
+     * subtitle. Without it the same query returned rows with no `videoId` at all
+     * (artists), which [parseListItem] silently drops.
+     */
+    private const val FILTER_SONGS = "EgWKAQIIAWoKEAkQBRAKEAMQBA=="
+
     private val json = "application/json; charset=utf-8".toMediaType()
 
     private val http = OkHttpClient.Builder()
@@ -51,18 +67,18 @@ object YouTubeMusicApi {
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
-    /** Search YouTube Music; returns ELARA tracks tagged [MusicSource.YOUTUBE_MUSIC]. */
-    suspend fun search(query: String, limit: Int = 15): List<Track> =
+    /**
+     * Search YouTube Music; returns ELARA tracks tagged [MusicSource.YOUTUBE_MUSIC].
+     *
+     * [songsOnly] adds the Songs-tab filter (see [FILTER_SONGS]). Home's rows pass
+     * it; the search screen does not, because there a mixed list is the point.
+     */
+    suspend fun search(query: String, limit: Int = 15, songsOnly: Boolean = false): List<Track> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val body = """
-                    {"context":{"client":{"clientName":"WEB_REMIX",
-                      "clientVersion":"$WEB_REMIX_VERSION","hl":"en","gl":"IN"}},"query":${jStr(query)}}
-                """.trimIndent()
-
                 val root = post(
                     url = API + "search?prettyPrint=false",
-                    body = body,
+                    body = searchBody(query, songsOnly),
                     headers = mapOf(
                         "User-Agent" to UA_WEB,
                         "X-YouTube-Client-Name" to "67",
@@ -78,6 +94,22 @@ object YouTubeMusicApi {
                 emptyList()
             }
         }
+
+    /**
+     * The `search` request body.
+     *
+     * `internal` so the filter is unit-testable: a dropped `params` key does not
+     * error, it quietly changes the *shape* of the results — video rows, artists
+     * with no `videoId`, and upload packaging in place of song titles. That
+     * failure is invisible in a running app and obvious in a test.
+     */
+    internal fun searchBody(query: String, songsOnly: Boolean): String {
+        val params = if (songsOnly) ",\"params\":" + jStr(FILTER_SONGS) else ""
+        return """
+            {"context":{"client":{"clientName":"WEB_REMIX",
+              "clientVersion":"$WEB_REMIX_VERSION","hl":"en","gl":"IN"}},"query":${jStr(query)}$params}
+        """.trimIndent()
+    }
 
     /**
      * Resolve a directly playable URL for a YouTube video. Prefers the highest

@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.playback
+package com.piroman.elara.playback
 
 import android.content.Intent
 import androidx.media3.common.Player

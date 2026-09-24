@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.components
+package com.piroman.elara.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -30,12 +30,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.Row
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.ui.theme.AuraPlayerSurface
-import com.aesthetic.spotify.ui.theme.AuraViolet
-import com.aesthetic.spotify.ui.theme.AuraPurple
-import com.aesthetic.spotify.ui.theme.AuraTextPrimary
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.ui.theme.AuraPlayerSurface
+import com.piroman.elara.ui.theme.AuraViolet
+import com.piroman.elara.ui.theme.AuraPurple
+import com.piroman.elara.ui.theme.AuraTextPrimary
+import com.piroman.elara.ui.theme.AuraTextSecondary
 import kotlinx.coroutines.flow.StateFlow
 
 private val PlayerSurface = AuraPlayerSurface

@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.data.model
+package com.piroman.elara.data.model
 
 import androidx.compose.runtime.Immutable
 

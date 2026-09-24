@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.playback
+package com.piroman.elara.playback
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -18,8 +18,8 @@ import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import coil.imageLoader
 import coil.request.ImageRequest
-import com.aesthetic.spotify.MainActivity
-import com.aesthetic.spotify.R
+import com.piroman.elara.MainActivity
+import com.piroman.elara.R
 import com.google.common.collect.ImmutableList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -145,7 +145,7 @@ class PlaybackNotificationProvider(private val context: Context) : MediaNotifica
             )
             .setStyle(
                 MediaStyle()
-                    .setMediaSession(mediaSession.sessionCompatToken)
+                    .setMediaSession(compatToken(mediaSession))
                     .setShowActionsInCompactView(0, 1, 2)
             )
 
@@ -153,6 +153,17 @@ class PlaybackNotificationProvider(private val context: Context) : MediaNotifica
 
         return MediaNotification(NOTIFICATION_ID, builder.build())
     }
+
+    /**
+     * The legacy session token [MediaStyle] needs.
+     *
+     * Deprecated in media3, but still the only way to hand a `MediaStyle` a
+     * session — the compat bridge has no replacement yet. Suppressed at the
+     * single access rather than on the whole function, so a genuinely
+     * avoidable deprecation elsewhere in `build` is still reported.
+     */
+    @Suppress("DEPRECATION")
+    private fun compatToken(mediaSession: MediaSession) = mediaSession.sessionCompatToken
 
     private fun contentIntent(): PendingIntent = PendingIntent.getActivity(
         context,

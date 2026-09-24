@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.components
+package com.piroman.elara.ui.components
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -16,11 +16,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.aesthetic.spotify.data.download.DownloadManager
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.theme.AuraError
-import com.aesthetic.spotify.ui.theme.AuraDownload
+import com.piroman.elara.data.download.DownloadManager
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.theme.AuraError
+import com.piroman.elara.ui.theme.AuraDownload
 
 /**
  * Download control with three states: idle (download icon), downloading
@@ -44,12 +44,27 @@ fun DownloadButton(
                 contentAlignment = Alignment.Center
             ) {
                 val progress = state.progress
-                CircularProgressIndicator(
-                    progress = if (progress in 0f..1f) progress else 0f,
-                    modifier = Modifier.size(iconSize - 2.dp),
-                    strokeWidth = 2.dp,
-                    color = tint
-                )
+                if (progress in 0f..1f) {
+                    CircularProgressIndicator(
+                        progress = progress,
+                        modifier = Modifier.size(iconSize - 2.dp),
+                        strokeWidth = 2.dp,
+                        color = tint
+                    )
+                } else {
+                    // A negative progress means the server sent no
+                    // `Content-Length`, so there is no fraction to draw. This
+                    // must be the **indeterminate** overload: passing
+                    // `progress = 0f` to the determinate one (as this did) drew a
+                    // permanently empty ring, which reads as a stuck or finished
+                    // download rather than a running one — and it is the common
+                    // case, because music CDNs often omit the length.
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(iconSize - 2.dp),
+                        strokeWidth = 2.dp,
+                        color = tint
+                    )
+                }
             }
         }
         DownloadManager.State.Done, null -> if (isDownloaded) {

@@ -1,15 +1,17 @@
-package com.aesthetic.spotify.ui.screens
+package com.piroman.elara.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -25,20 +27,21 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aesthetic.spotify.data.download.DownloadManager
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.data.source.SourceSetting
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.components.AddToPlaylistDialog
-import com.aesthetic.spotify.ui.components.TrackArtwork
-import com.aesthetic.spotify.ui.components.TrackContextMenu
-import com.aesthetic.spotify.ui.theme.AuraBg
-import com.aesthetic.spotify.ui.theme.AuraCardStrong
-import com.aesthetic.spotify.ui.theme.AuraField
-import com.aesthetic.spotify.ui.theme.AuraPurple
-import com.aesthetic.spotify.ui.theme.AuraTextPrimary
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
-import com.aesthetic.spotify.ui.theme.AuraTextTertiary
+import com.piroman.elara.data.download.DownloadManager
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.data.source.SourceSetting
+import com.piroman.elara.ui.LazyKeys
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.components.AddToPlaylistDialog
+import com.piroman.elara.ui.components.TrackArtwork
+import com.piroman.elara.ui.components.TrackContextMenu
+import com.piroman.elara.ui.theme.AuraBg
+import com.piroman.elara.ui.theme.AuraCardStrong
+import com.piroman.elara.ui.theme.AuraField
+import com.piroman.elara.ui.theme.AuraPurple
+import com.piroman.elara.ui.theme.AuraTextPrimary
+import com.piroman.elara.ui.theme.AuraTextSecondary
+import com.piroman.elara.ui.theme.AuraTextTertiary
 
 private val SearchFieldShape = RoundedCornerShape(14.dp)
 
@@ -47,6 +50,7 @@ private val SearchFieldShape = RoundedCornerShape(14.dp)
 fun SearchScreen(viewModel: MainViewModel) {
     val query by viewModel.searchQuery.collectAsState()
     val results by viewModel.searchResults.collectAsState()
+    val searchHistory by viewModel.searchHistory.collectAsState()
     val isConnecting by viewModel.isConnecting.collectAsState()
     val sourceSetting by viewModel.sourceSetting.collectAsState()
     val focusManager = LocalFocusManager.current
@@ -61,6 +65,17 @@ fun SearchScreen(viewModel: MainViewModel) {
     val downloadedIds = remember(downloadedEntries) {
         downloadedEntries.mapTo(HashSet()) { it.track.id }
     }
+
+    // Lazy keys: identity **plus an occurrence suffix**, never the bare id.
+    //
+    // Results are not guaranteed unique by id. With Music Source on Auto the
+    // repository concatenates the JioSaavn and YouTube lists and then collapses
+    // them with `MusicRepository.dedupe`, which matches on normalized
+    // title+artist — *not* on id. So it can drop an entry that only differs by
+    // source while leaving two entries that share an id, and a single source can
+    // simply return the same song twice under two title spellings. A duplicate
+    // key does not degrade gracefully, it crashes the list. See LazyKeys.
+    val resultsKeyed = remember(results) { LazyKeys.withOccurrence(results) { it.id } }
 
     Column(modifier = Modifier.fillMaxSize().background(AuraBg).padding(16.dp)) {
         Text(
@@ -111,6 +126,54 @@ fun SearchScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // ── Recent searches ────────────────────────────────────────────
+        // Shown only while the field is empty, so the chips never compete with
+        // results for space. Tapping one re-runs the search by setting the query
+        // — the same path typing takes, debounce included.
+        if (query.isEmpty() && searchHistory.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Recent searches",
+                    color = AuraTextSecondary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TextButton(onClick = { viewModel.clearSearchHistory() }) {
+                    Text("Clear", color = AuraTextTertiary, fontSize = 13.sp)
+                }
+            }
+
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(
+                    items = searchHistory,
+                    // Query strings are unique by construction — `recordSearch`
+                    // de-duplicates case-insensitively before storing — so the
+                    // text itself is a safe key here.
+                    key = { it },
+                    contentType = { "search-history" }
+                ) { term ->
+                    AssistChip(
+                        onClick = { viewModel.setSearchQuery(term) },
+                        label = { Text(term, color = AuraTextPrimary, fontSize = 13.sp) },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.History,
+                                contentDescription = null,
+                                tint = AuraTextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
         if (results.isEmpty() && query.isNotEmpty() && !isConnecting) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No results found. Try another search.", color = AuraTextSecondary)
@@ -119,10 +182,11 @@ fun SearchScreen(viewModel: MainViewModel) {
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             items(
-                items = results,
-                key = { it.id },
+                items = resultsKeyed,
+                key = { it.second },
                 contentType = { "track" }
-            ) { track ->
+            ) { item ->
+                val track = item.first
                 SearchTrackItem(
                     track = track,
                     onClick = { viewModel.playTrack(track, results) },

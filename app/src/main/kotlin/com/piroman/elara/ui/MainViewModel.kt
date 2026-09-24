@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui
+package com.piroman.elara.ui
 
 import android.app.Application
 import android.content.ComponentName
@@ -9,26 +9,33 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import com.aesthetic.spotify.data.download.DownloadManager
-import com.aesthetic.spotify.data.model.LyricLine
-import com.aesthetic.spotify.data.diagnostics.StartupTiming
-import com.aesthetic.spotify.data.model.MusicSource
-import com.aesthetic.spotify.data.model.SafeGson
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.data.playlist.Playlist
-import com.aesthetic.spotify.data.playlist.PlaylistManager
-import com.aesthetic.spotify.data.repository.MusicRepository
-import com.aesthetic.spotify.data.source.SourcePreferences
-import com.aesthetic.spotify.data.source.SourceSetting
-import com.aesthetic.spotify.data.network.SpotifyPlaylistImporter
-import com.aesthetic.spotify.data.network.YouTubeMusicApi
-import com.aesthetic.spotify.playback.PlaybackManager
-import com.aesthetic.spotify.playback.PlaybackService
-import com.aesthetic.spotify.playback.RepeatMode
-import com.google.common.util.concurrent.MoreExecutors
-import com.google.gson.reflect.TypeToken
+import com.piroman.elara.data.backup.ElaraBackup
+import com.piroman.elara.data.backup.RestoreReport
+import com.piroman.elara.data.backup.UnsupportedVersionException
+import com.piroman.elara.data.download.DownloadManager
+import com.piroman.elara.data.model.LyricLine
+import com.piroman.elara.data.diagnostics.StartupTiming
+import com.piroman.elara.data.model.MusicSource
+import com.piroman.elara.data.model.SafeGson
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.data.playlist.Playlist
+import com.piroman.elara.data.playlist.PlaylistManager
+import com.piroman.elara.data.repository.MusicRepository
+import com.piroman.elara.data.lyrics.LyricsCache
+import com.piroman.elara.data.source.DataSaverPreferences
+import com.piroman.elara.data.source.PlaybackPreferences
+import com.piroman.elara.data.source.SourcePreferences
+import com.piroman.elara.data.source.SourceSetting
+import com.piroman.elara.data.stats.ListeningStatsManager
+import com.piroman.elara.data.network.SpotifyPlaylistImporter
+import com.piroman.elara.data.network.YouTubeMusicApi
+import com.piroman.elara.playback.PlaybackManager
+import com.piroman.elara.playback.PlaybackService
+import com.piroman.elara.playback.RepeatMode
+import com.piroman.elara.data.model.listTypeOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -44,7 +51,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val downloadManager = DownloadManager.getInstance(application)
     private val playlistManager = PlaylistManager.getInstance(application)
     private val sourcePreferences = SourcePreferences.getInstance(application)
-    private val playHistory = com.aesthetic.spotify.data.history.PlayHistoryManager.getInstance(application)
+    private val dataSaverPrefs = DataSaverPreferences.getInstance(application)
+    private val playbackPrefs = PlaybackPreferences.getInstance(application)
+    private val lyricsCache = LyricsCache.getInstance(application)
+    private val statsManager = ListeningStatsManager.getInstance(application)
+    private val playHistory = com.piroman.elara.data.history.PlayHistoryManager.getInstance(application)
     private val appContext = application.applicationContext
     private val prefs = application.getSharedPreferences("aurasonic_prefs", Context.MODE_PRIVATE)
 
@@ -60,11 +71,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery
 
+    private val _searchHistory = MutableStateFlow(loadSearchHistory())
+    val searchHistory: StateFlow<List<String>> = _searchHistory
+
     private val _trendingTracks = MutableStateFlow<List<Track>>(emptyList())
     val trendingTracks: StateFlow<List<Track>> = _trendingTracks
 
-    // Recently played (Home quick-picks grid)
+    // Recently played (Home quick-picks shelf)
     val recentlyPlayed: StateFlow<List<Track>> = playHistory.recent
+
+    // Tracks played at least twice, most-played first. Empty on a fresh install
+    // — see PlayHistoryManager.MOST_PLAYED_MIN_PLAYS for why.
+    val mostPlayed: StateFlow<List<Track>> = playHistory.mostPlayed
 
     private val _searchResults = MutableStateFlow<List<Track>>(emptyList())
     val searchResults: StateFlow<List<Track>> = _searchResults
@@ -74,6 +92,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSourceSetting(setting: SourceSetting) {
         sourcePreferences.set(setting)
+    }
+
+    /** When true the app avoids background network use (autoplay, bulk download). */
+    val dataSaverEnabled: StateFlow<Boolean> = dataSaverPrefs.enabled
+
+    fun setDataSaver(enabled: Boolean) {
+        dataSaverPrefs.set(enabled)
+    }
+
+    /** Whether autoplay (append similar tracks when the queue ends) is on. */
+    val autoplayEnabled: StateFlow<Boolean> = playbackPrefs.autoplayEnabled
+    val crossfadeSeconds: StateFlow<Int> = playbackPrefs.crossfadeSeconds
+    val smartShuffleEnabled: StateFlow<Boolean> = playbackPrefs.smartShuffleEnabled
+
+    /**
+     * The player's audio session, so the system equalizer panel can attach to
+     * *our* playback instead of opening unscoped. ExoPlayer reports 0 until the
+     * audio sink is initialised, so callers must check for a positive value
+     * before passing it to [android.media.audiofx.AudioEffect].
+     */
+    val audioSessionId: Int get() = playbackManager.exoPlayer.audioSessionId
+
+    /** Total milliseconds actually listened to (not including pauses or seeks). */
+    val totalListeningMs: StateFlow<Long> = statsManager.totalMs
+    val uniqueTracksListened: StateFlow<Int> = statsManager.totalTracks
+
+    fun setAutoplay(enabled: Boolean) {
+        playbackPrefs.setAutoplay(enabled)
+        playbackManager.autoplayProvider = if (enabled) {
+            { track -> autoplayCandidates(track) }
+        } else null
+    }
+
+    fun setCrossfade(seconds: Int) {
+        playbackPrefs.setCrossfade(seconds)
+        playbackManager.crossfadeMs = seconds * 1_000L
+    }
+
+    fun setSmartShuffle(enabled: Boolean) {
+        playbackPrefs.setSmartShuffle(enabled)
+        playbackManager.smartShuffle = enabled
     }
 
     private val _isConnecting = MutableStateFlow(false)
@@ -95,6 +154,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val repeatMode: StateFlow<RepeatMode> = playbackManager.repeatMode
     val playbackError: StateFlow<String?> = playbackManager.playbackError
 
+    /** Sleep-timer countdown in ms, or null when off. See PlaybackManager. */
+    val sleepTimerRemainingMs: StateFlow<Long?> = playbackManager.sleepTimerRemainingMs
+
+    fun setSleepTimer(minutes: Int?) {
+        playbackManager.setSleepTimer(minutes?.let { it * 60_000L })
+    }
+
     private val _isPlayerExpanded = MutableStateFlow(false)
     val isPlayerExpanded: StateFlow<Boolean> = _isPlayerExpanded
 
@@ -113,6 +179,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Downloads
     val downloadStates: StateFlow<Map<String, DownloadManager.State>> = downloadManager.states
     val downloadedTracks: StateFlow<List<DownloadManager.Entry>> = downloadManager.entries
+
+    /** Bytes those downloads occupy on disk; null until the sum is computed. */
+    val downloadedBytes: StateFlow<Long?> = downloadManager.totalBytes
 
     // Playlists
     val playlists: StateFlow<List<Playlist>> = playlistManager.playlists
@@ -172,13 +241,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playlistManager.removeTrack(playlistId, trackId)
     }
 
-    fun getPlaylist(id: String): Playlist? = playlistManager.get(id)
+    /** Drag-reorder inside a user playlist. See [PlaylistManager.moveTrack]. */
+    fun moveTrackInPlaylist(playlistId: String, from: Int, to: Int) {
+        playlistManager.moveTrack(playlistId, from, to)
+    }
 
-    // ── Home: featured editorial playlists (browse, not saved) ──────────
+    /**
+     * Commits a display-only sort to disk, so it survives leaving the screen.
+     * Sorting itself is deliberately non-destructive — see [PlaylistSort].
+     */
+    fun savePlaylistOrder(playlistId: String, tracks: List<Track>) {
+        playlistManager.setTracks(playlistId, tracks)
+    }
+
+    // ── Home: browsable collections (browse, not saved) ─────────────────
 
     private val _featuredPlaylists =
-        MutableStateFlow<List<MusicRepository.FeaturedPlaylist>>(emptyList())
-    val featuredPlaylists: StateFlow<List<MusicRepository.FeaturedPlaylist>> = _featuredPlaylists
+        MutableStateFlow<List<MusicRepository.BrowseTile>>(emptyList())
+    val featuredPlaylists: StateFlow<List<MusicRepository.BrowseTile>> = _featuredPlaylists
+
+    /** Current chart rankings — "India Superhits Top 50" and friends. */
+    private val _charts = MutableStateFlow<List<MusicRepository.BrowseTile>>(emptyList())
+    val charts: StateFlow<List<MusicRepository.BrowseTile>> = _charts
+
+    /** Decade charts — "Hindi 1990s". Filled by the same call as [charts]. */
+    private val _throwback = MutableStateFlow<List<MusicRepository.BrowseTile>>(emptyList())
+    val throwback: StateFlow<List<MusicRepository.BrowseTile>> = _throwback
+
+    private val _newReleases = MutableStateFlow<List<MusicRepository.BrowseTile>>(emptyList())
+    val newReleases: StateFlow<List<MusicRepository.BrowseTile>> = _newReleases
+
+    /**
+     * The loose songs in the *same* feed as [newReleases], which the album filter
+     * used to throw away. Filled by the same request — one call, two rows.
+     */
+    private val _newSongs = MutableStateFlow<List<Track>>(emptyList())
+    val newSongs: StateFlow<List<Track>> = _newSongs
+
+    /**
+     * What people are searching for right now. Titles, not tiles: the feed mixes
+     * albums, songs and artists, so the row *searches* each term rather than
+     * pretending to open it. See [MusicRepository.getTrendingSearches].
+     */
+    private val _trendingSearches = MutableStateFlow<List<String>>(emptyList())
+    val trendingSearches: StateFlow<List<String>> = _trendingSearches
+
+    /**
+     * Home's YouTube Music rows. Empty — and *kept* empty — when the Music
+     * Source setting is JioSaavn-only; see [loadYouTubeMusicRows].
+     *
+     * Search-backed rather than feed-backed, which is a measured limitation of
+     * the YouTube Music API surface, not a shortcut. The probing that ruled out
+     * the browse feeds is recorded on [MusicRepository.YouTubeMusicRows].
+     *
+     * Named `hipHop` rather than `newSongs`: the row was built from a "new songs"
+     * query that returned 2018–2022 releases, so the old name described something
+     * the row never was. See [MusicRepository.YouTubeMusicRows].
+     */
+    private val _youTubeTop = MutableStateFlow<List<Track>>(emptyList())
+    val youTubeTop: StateFlow<List<Track>> = _youTubeTop
+
+    private val _youTubeHipHop = MutableStateFlow<List<Track>>(emptyList())
+    val youTubeHipHop: StateFlow<List<Track>> = _youTubeHipHop
 
     private val _browsePlaylist = MutableStateFlow<MusicRepository.BrowsePlaylist?>(null)
     val browsePlaylist: StateFlow<MusicRepository.BrowsePlaylist?> = _browsePlaylist
@@ -186,24 +310,178 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isBrowseLoading = MutableStateFlow(false)
     val isBrowseLoading: StateFlow<Boolean> = _isBrowseLoading
 
-    private fun loadFeaturedPlaylists() {
+    /**
+     * When Home's rows were last *requested*. Set by [loadHomeRows], which is the
+     * only thing that fetches them.
+     */
+    @Volatile private var homeRowsRequestedAtMs = 0L
+
+    /**
+     * True while a batch is in flight, so two batches can never overlap — the
+     * failure mode being a resume that arrives while the previous fetch is still
+     * running and doubles every request.
+     */
+    @Volatile private var homeRowsLoading = false
+
+    /**
+     * Every Home row, as one batch.
+     *
+     * These four loaders used to each launch their own coroutine straight from
+     * `init`, which meant nothing could tell when Home had finished loading.
+     * [refreshHomeIfStale] needs exactly that: "is the last fetch still running?"
+     * and "did the last fetch come back empty?" are the same question, and
+     * without an answer the refresh either double-fetches at startup or never
+     * heals a failed load.
+     *
+     * They still run **concurrently** — they are independent feeds, and awaiting
+     * them one after another would serialise four round trips — so this costs the
+     * same wall-clock time as before.
+     *
+     * `loadYouTubeMusicRows` is deliberately not part of the batch: it is gated
+     * by the Music Source setting and owned by the collector in `init`, and
+     * calling it from here too would fetch the YouTube rows twice on every cold
+     * start.
+     */
+    private fun loadHomeRows() {
+        homeRowsLoading = true
+        homeRowsRequestedAtMs = System.currentTimeMillis()
         viewModelScope.launch {
-            _featuredPlaylists.value = runCatching {
-                repository.getFeaturedPlaylists()
-            }.getOrElse {
-                Log.e("MainViewModel", "featured playlists: ${it.message}")
-                emptyList()
+            try {
+                coroutineScope {
+                    launch { loadFeaturedPlaylists() }
+                    launch { loadCharts() }
+                    launch { loadNewReleases() }
+                    launch { loadTrendingSearches() }
+                }
+            } finally {
+                homeRowsLoading = false
             }
         }
     }
 
-    fun loadBrowsePlaylist(featured: MusicRepository.FeaturedPlaylist) {
+    /**
+     * Re-fetches Home's rows when the user comes back to the app.
+     *
+     * Called from `MainActivity.onResume`. The decision about whether a fetch is
+     * worth making is [HomeRefreshPolicy]'s, and the reasoning behind it lives
+     * there — it is a pure function so it can be tested, because every way of
+     * getting it wrong is silent.
+     *
+     * The short version: Home's rows are fetched once, when this ViewModel is
+     * created, and nothing re-fetched them afterwards. The ViewModel is
+     * Activity-scoped, so an app left open in the background for days kept
+     * showing the rows from its last cold start, and with no pull-to-refresh the
+     * user had no way to ask for newer ones. This is the trigger that was missing.
+     */
+    fun refreshHomeIfStale() {
+        val shouldRefresh = HomeRefreshPolicy.shouldRefresh(
+            requestedAtMs = homeRowsRequestedAtMs,
+            nowMs = System.currentTimeMillis(),
+            loading = homeRowsLoading,
+            cameBackEmpty = homeCameBackEmpty(),
+            maxAgeMs = HOME_ROWS_MAX_AGE_MS
+        )
+        if (!shouldRefresh) return
+
+        loadHomeRows()
+        refreshTrending()
+        loadYouTubeMusicRows(sourcePreferences.setting.value)
+    }
+
+    /**
+     * True when the last completed batch left Home with nothing to show.
+     *
+     * Only the first two rows are consulted. They are the ones a failure empties
+     * together, and requiring *both* to be empty keeps a genuinely thin catalogue
+     * — or a source that simply has no charts today — from being read as an
+     * error and re-fetched on every resume.
+     */
+    private fun homeCameBackEmpty(): Boolean =
+        _featuredPlaylists.value.isEmpty() && _charts.value.isEmpty()
+
+    private suspend fun loadFeaturedPlaylists() {
+        _featuredPlaylists.value = runCatching {
+            repository.getFeaturedPlaylists()
+        }.getOrElse {
+            Log.e("MainViewModel", "featured playlists: ${it.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Fills Home's two chart rows.
+     *
+     * `content.getCharts` is a single feed containing both current rankings and
+     * decade retrospectives, so this is deliberately one request writing two
+     * states rather than two requests that could disagree.
+     */
+    private suspend fun loadCharts() {
+        val rows = runCatching { repository.getCharts() }.getOrElse {
+            Log.e("MainViewModel", "charts: ${it.message}")
+            MusicRepository.ChartRows()
+        }
+        _charts.value = rows.top
+        _throwback.value = rows.throwback
+    }
+
+    private suspend fun loadNewReleases() {
+        val rows = runCatching { repository.getNewReleases() }.getOrElse {
+            Log.e("MainViewModel", "new releases: ${it.message}")
+            MusicRepository.NewReleaseRows()
+        }
+        _newReleases.value = rows.albums
+        _newSongs.value = rows.songs
+    }
+
+    private suspend fun loadTrendingSearches() {
+        _trendingSearches.value =
+            runCatching { repository.getTrendingSearches() }.getOrElse {
+                Log.e("MainViewModel", "trending searches: ${it.message}")
+                emptyList()
+            }
+    }
+
+    /**
+     * Fills Home's two YouTube Music rows, and **clears** them when the Music
+     * Source setting is JioSaavn-only.
+     *
+     * Clearing matters as much as filling: a row titled "YouTube Music trending"
+     * sitting under a setting the user set to "JioSaavn only" contradicts the
+     * setting, and looks like the setting was ignored. Both directions are
+     * driven by the collector in `init`, so switching the setting back and forth
+     * adds and removes the rows without a restart.
+     *
+     * The JioSaavn discovery rows are deliberately *not* cleared in the
+     * YouTube-Music-only direction — that would empty Home rather than change it.
+     */
+    private fun loadYouTubeMusicRows(setting: SourceSetting) {
+        if (setting == SourceSetting.JIOSAAVN) {
+            _youTubeTop.value = emptyList()
+            _youTubeHipHop.value = emptyList()
+            return
+        }
+        viewModelScope.launch {
+            val rows = runCatching { repository.getYouTubeMusicRows() }.getOrElse {
+                Log.e("MainViewModel", "youtube music rows: ${it.message}")
+                MusicRepository.YouTubeMusicRows()
+            }
+            _youTubeTop.value = rows.top
+            _youTubeHipHop.value = rows.genre
+        }
+    }
+
+    /**
+     * Opens a Home tile. The tile carries its own [MusicRepository.BrowseTile.Kind],
+     * so a chart, an editorial playlist and an album all reach the right endpoint
+     * through this one entry point.
+     */
+    fun loadBrowsePlaylist(tile: MusicRepository.BrowseTile) {
         viewModelScope.launch {
             _isBrowseLoading.value = true
             _browsePlaylist.value = runCatching {
-                repository.getPlaylistSongs(featured.token, featured.image)
+                repository.getCollectionSongs(tile)
             }.getOrElse {
-                Log.e("MainViewModel", "browse playlist: ${it.message}")
+                Log.e("MainViewModel", "browse collection: ${it.message}")
                 null
             }
             _isBrowseLoading.value = false
@@ -221,8 +499,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun isBrowsePlaylistSaved(): Boolean =
-        browsePlaylist.value?.let { playlistManager.findByName(it.title) != null } == true
+    // There is deliberately no `isBrowsePlaylistSaved()` here. The browse screen
+    // needs the answer to be *observable* so the label flips to "Saved in
+    // Library ✓" the moment a save lands, and a plain function reading
+    // `PlaylistManager` is not — the caller would have to poll it. The screen
+    // therefore derives it from the collected `playlists` state, which is
+    // reactive by construction. `PlaylistManager.findByName` is the same
+    // case-insensitive rule, so there is one rule, not two.
 
     /**
      * Removes the auto-seeded "recommended" playlists created by an earlier
@@ -242,22 +525,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadTrack(track: Track) {
-        downloadManager.download(track) { t ->
-            when (t.source) {
-                MusicSource.YOUTUBE_MUSIC ->
-                    YouTubeMusicApi.resolveStreamUrl(t.videoId ?: t.id)
-                MusicSource.JIOSAAVN -> repository.resolveFullStream(t)
-            }
-        }
+        downloadManager.download(track) { t -> resolveStreamUrl(t) }
+    }
+
+    /**
+     * Sequential batch download, one track at a time to avoid rate-limiting.
+     *
+     * Returns false when Data Saver blocked the batch — a whole-playlist fetch is
+     * exactly the background network use that setting promises to avoid, and
+     * before this it was not checked anywhere. A single explicit [downloadTrack]
+     * is a deliberate foreground action, so it is deliberately *not* gated.
+     */
+    fun downloadPlaylistTracks(tracks: List<Track>): Boolean {
+        if (dataSaverPrefs.enabled.value) return false
+        downloadManager.downloadAll(tracks) { t -> resolveStreamUrl(t) }
+        return true
+    }
+
+    private suspend fun resolveStreamUrl(track: Track): String? = when (track.source) {
+        MusicSource.YOUTUBE_MUSIC ->
+            YouTubeMusicApi.resolveStreamUrl(track.videoId ?: track.id)
+                ?: repository.resolveFullStream(track)
+        MusicSource.JIOSAAVN -> repository.resolveFullStream(track)
     }
 
     fun deleteDownload(trackId: String) {
         downloadManager.delete(trackId)
     }
 
+    /** Share a track through the system sheet. */
+    fun shareTrack(track: Track) {
+        val text = "Listening to \"${track.title}\" by ${track.artist} on Elara."
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        val chooser = Intent.createChooser(intent, "Share track")
+        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        appContext.startActivity(chooser)
+    }
+
     init {
         Log.d("MainViewModel", "Initializing ViewModel")
-        loadFeaturedPlaylists()
+        loadHomeRows()
         cleanupOldSeededPlaylists()
 
         // Every property initializer in this class has run by now, so this is the
@@ -266,9 +576,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // load() never runs again. See StartupTiming.
         StartupTiming.flush(appContext)
 
-        // Trending follows the Music Source setting; re-fetches on change.
+        // Trending and the YouTube Music rows both follow the Music Source
+        // setting; re-fetches on change. `collect` emits the current value
+        // immediately, so this is also the initial load for both.
         viewModelScope.launch {
-            sourcePreferences.setting.collect { refreshTrending() }
+            sourcePreferences.setting.collect {
+                refreshTrending()
+                loadYouTubeMusicRows(it)
+            }
         }
 
         // Bind the playback service for as long as this ViewModel lives.
@@ -276,6 +591,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appContext,
             SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java))
         ).buildAsync()
+
+        // Apply stored playback preferences.
+        playbackManager.crossfadeMs = playbackPrefs.crossfadeSeconds.value * 1_000L
+        playbackManager.smartShuffle = playbackPrefs.smartShuffleEnabled.value
+        playbackManager.smartShuffleScorer = { current, tracks ->
+            tracks.mapIndexed { index, track ->
+                index to scoreTrack(current, track)
+            }.toMap()
+        }
 
         // Playback URL chain: the player checks downloaded files FIRST via
         // localSourceResolver (so downloads always play offline), then falls
@@ -303,6 +627,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             playbackManager.retryCurrentWithoutLocal()
         }
 
+        // Keep playing when the queue runs out: append similar tracks instead
+        // of stopping. See `autoplayCandidates` for where they come from.
+        if (playbackPrefs.autoplayEnabled.value) {
+            playbackManager.autoplayProvider = { track -> autoplayCandidates(track) }
+        }
+
         // Search honours the Music Source setting; re-runs when it changes.
         viewModelScope.launch {
             combine(searchQuery, sourcePreferences.setting) { q, s -> q to s }
@@ -321,6 +651,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             emptyList()
                         }
                         _isConnecting.value = false
+                        // Only remember searches that actually found something, so
+                        // a typo or a dead-end query does not become a permanent
+                        // chip. `recordSearch` also collapses the prefixes the
+                        // 400 ms debounce produces while typing — see there.
+                        if (_searchResults.value.isNotEmpty()) recordSearch(query)
                     }
                 }
         }
@@ -333,10 +668,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _lyricsLoading.value = false
                     return@collect
                 }
-                _lyricsLoading.value = true
                 val trackId = track.id
+
+                // Cached lyrics are instant — no spinner, no network.
+                val cached = lyricsCache.get(trackId)
+                if (cached != null) {
+                    _lyrics.value = cached
+                    _lyricsLoading.value = false
+                    return@collect
+                }
+
+                _lyricsLoading.value = true
                 val lyrics = runCatching { repository.getLyrics(track) }
                     .getOrElse { emptyList() }
+                lyricsCache.put(trackId, lyrics)
                 // Ignore stale results if the track changed while loading.
                 if (currentTrack.value?.id == trackId) {
                     _lyrics.value = lyrics
@@ -385,45 +730,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _similarTracks.value = similar
     }
 
+    private fun scoreTrack(current: Track, track: Track): Int {
+        var score = 0
+        val currentArtist = current.artist.orEmpty().trim()
+        val currentGenre = current.genre.orEmpty().trim()
+        if (currentArtist.isNotEmpty() &&
+            track.artist.orEmpty().equals(currentArtist, ignoreCase = true)
+        ) score += 50
+        if (currentGenre.isNotEmpty() &&
+            track.genre.orEmpty().equals(currentGenre, ignoreCase = true)
+        ) score += 30
+        if (track.source == current.source) score += 5
+        val trackEnergy = track.energy
+        val currentEnergy = current.energy
+        if (trackEnergy != null && currentEnergy != null) {
+            val energyDiff = kotlin.math.abs(trackEnergy - currentEnergy)
+            score += kotlin.math.max(0, 15 - energyDiff)
+        }
+        return score
+    }
+
     private fun findSimilarTracks(
         current: Track,
         candidates: List<Track>,
         queue: List<Track>
     ): List<Track> {
         val excludedIds = (queue.map { it.id } + current.id).toSet()
-        // `orEmpty()` because Gson can leave nulls in these non-null fields.
-        val currentArtist = current.artist.orEmpty().trim()
-        val currentGenre = current.genre.orEmpty().trim()
-
         return candidates
             .filter { it.id !in excludedIds }
-            .map { track ->
-                var score = 0
-                // Same artist: high score. Blank values must not count as a
-                // match, or every genre-less track would score the same and
-                // "similar" would be meaningless.
-                if (currentArtist.isNotEmpty() &&
-                    track.artist.orEmpty().equals(currentArtist, ignoreCase = true)
-                ) score += 50
-                // Same genre: medium score
-                if (currentGenre.isNotEmpty() &&
-                    track.genre.orEmpty().equals(currentGenre, ignoreCase = true)
-                ) score += 30
-                // Same source: small boost
-                if (track.source == current.source) score += 5
-                // Energy similarity
-                val trackEnergy = track.energy
-                val currentEnergy = current.energy
-                if (trackEnergy != null && currentEnergy != null) {
-                    val energyDiff = kotlin.math.abs(trackEnergy - currentEnergy)
-                    score += kotlin.math.max(0, 15 - energyDiff)
-                }
-                track to score
-            }
-            .filter { it.second > 10 } // Minimum threshold
+            .map { track -> track to scoreTrack(current, track) }
+            .filter { it.second > 10 }
             .sortedByDescending { it.second }
             .take(10)
             .map { it.first }
+    }
+
+    /**
+     * Autoplay pool for [PlaybackManager.autoplayProvider].
+     *
+     * The local pool (recently played, most played, trending) is scored first —
+     * it is instant and offline. When it yields too little to keep a queue
+     * going, a catalogue search for the same artist widens it, so autoplay can
+     * surface music the user has never played rather than looping what they
+     * already have. Everything goes through [findSimilarTracks], which is also
+     * what excludes the current queue.
+     */
+    private suspend fun autoplayCandidates(current: Track): List<Track> {
+        val queue = playbackManager.queue.value
+        val local = buildList {
+            addAll(recentlyPlayed.value)
+            addAll(mostPlayed.value)
+            addAll(trendingTracks.value)
+        }
+        val fromLocal = findSimilarTracks(current, local.distinctBy { it.id }, queue)
+        // Data saver: never hit the catalogue for autoplay; the local pool is
+        // enough or playback simply stops rather than burning mobile data.
+        if (fromLocal.size >= AUTOPLAY_MIN_TRACKS || dataSaverPrefs.enabled.value) {
+            return fromLocal
+        }
+
+        // Thin local pool — likely a fresh install. Ask the catalogue instead.
+        // A blank artist would search for nothing and return the whole trending
+        // page, which is not "similar", so bail out rather than degrade.
+        val artist = current.artist.orEmpty().trim()
+        if (artist.isEmpty()) return fromLocal
+
+        val fetched = runCatching {
+            repository.searchBySource(artist, sourcePreferences.setting.value)
+        }.getOrElse {
+            Log.w("MainViewModel", "autoplay search failed: ${it.message}")
+            emptyList()
+        }
+        val fromSearch = findSimilarTracks(current, fetched, queue)
+
+        return (fromLocal + fromSearch).distinctBy { it.id }.take(AUTOPLAY_MAX_TRACKS)
     }
 
     fun setSearchQuery(query: String) {
@@ -434,9 +814,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Plays [track], with [contextTracks] becoming the queue.
+     *
+     * "Recently played" is **not** recorded here. `PlaybackManager.playAt` owns
+     * it, because that is the one point every playback path shares — a tap,
+     * Next/Previous, the queue drawer, autoplay, the notification controls, and
+     * resuming the queue restored from disk. Recording here as well would count
+     * a single tap as two plays, which is what `MOST_PLAYED_MIN_PLAYS` would
+     * then read as "played twice".
+     */
     fun playTrack(track: Track, contextTracks: List<Track> = emptyList()) {
         startPlaybackService()
-        playHistory.record(track)
         playbackManager.playTrack(track, contextTracks)
     }
 
@@ -510,6 +899,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.onFailure { Log.e("MainViewModel", "Service start failed: ${it.message}") }
     }
 
+    /**
+     * One-shot read of the liked set — **not observable**.
+     *
+     * `_likedTracks.value` is a plain read, so calling this from a composable does not
+     * subscribe that composable to the flow: it keeps rendering its first answer.
+     * Tapping like still updated the stored list, but the heart never repainted, which
+     * is indistinguishable from "the like button is broken". Compose callers must
+     * collect [likedTracks] instead. This is for click handlers and non-Compose callers.
+     */
     fun isLiked(track: Track): Boolean = _likedTracks.value.any { it.id == track.id }
 
     fun toggleLikeTrack(track: Track) {
@@ -536,12 +934,141 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadLikedTracks(): List<Track> {
         return try {
             val json = prefs.getString("liked_tracks", null) ?: return emptyList()
-            val type = object : TypeToken<List<Track>>() {}.type
+            val type = listTypeOf(Track::class.java)
             val loaded: List<Track>? = gson.fromJson(json, type)
             loaded ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    // ── Search history ────────────────────────────────────────────────────
+
+    /**
+     * Remembers a query that returned results.
+     *
+     * Search runs off a 400 ms debounce, so typing "bon jovi" at an unhurried
+     * pace fires for "bon", "bon j", "bon jo"… A naive prepend would turn the
+     * chips into a list of every prefix, so when the newest entry is itself a
+     * prefix of the incoming query it is **replaced** rather than prepended —
+     * collapsing that whole run into the single query the user meant. A repeat
+     * of an older query is moved to the front instead of duplicated.
+     */
+    private fun recordSearch(rawQuery: String) {
+        val query = rawQuery.trim()
+        if (query.length < MIN_SEARCH_HISTORY_LENGTH) return
+
+        val current = _searchHistory.value
+        val newest = current.firstOrNull()
+        val collapsed = if (newest != null && query.startsWith(newest, ignoreCase = true)) {
+            listOf(query) + current.drop(1)
+        } else {
+            listOf(query) + current
+        }
+
+        val deduped = (listOf(query) + collapsed.filterNot { it.equals(query, ignoreCase = true) })
+            .take(MAX_SEARCH_HISTORY)
+
+        _searchHistory.value = deduped
+        prefs.edit().putString(KEY_SEARCH_HISTORY, gson.toJson(deduped)).apply()
+    }
+
+    fun clearSearchHistory() {
+        _searchHistory.value = emptyList()
+        prefs.edit().remove(KEY_SEARCH_HISTORY).apply()
+    }
+
+    private fun loadSearchHistory(): List<String> = try {
+        val type = listTypeOf(String::class.java)
+        val loaded: List<String>? = gson.fromJson(prefs.getString(KEY_SEARCH_HISTORY, null), type)
+        loaded ?: emptyList()
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    // ── Backup & restore ──────────────────────────────────────────────────
+
+    /**
+     * The whole library as one JSON document.
+     *
+     * Touches only in-memory state, so there is no disk access here — the caller
+     * writes the returned string wherever the user chose. It does serialise the
+     * full library, which is CPU work proportional to its size, so call it from
+     * a background dispatcher.
+     */
+    fun exportBackupJson(): String = ElaraBackup.encode(
+        ElaraBackup(
+            appPackage = appContext.packageName,
+            playlists = playlistManager.playlists.value,
+            likedTracks = _likedTracks.value,
+            recentTracks = playHistory.recent.value,
+            playStats = playHistory.stats.value,
+            musicSource = sourcePreferences.setting.value.name
+        )
+    )
+
+    /**
+     * Replaces the library with the contents of [json].
+     *
+     * Returns null when the text is not a backup at all, and throws
+     * [UnsupportedVersionException] for a document written by a newer build.
+     * This **overwrites** what is on the device — the caller must confirm first.
+     */
+    fun importBackupJson(json: String): RestoreReport? {
+        val backup = ElaraBackup.decode(json) ?: return null
+
+        playlistManager.replaceAll(backup.playlists)
+        playHistory.replaceAll(backup.recentTracks, backup.playStats)
+
+        // Stored liked tracks carry isLiked = true; re-assert it rather than
+        // trusting the file, because the flag is what the UI reads to draw the
+        // filled heart.
+        val liked = backup.likedTracks.map { it.copy(isLiked = true) }
+        _likedTracks.value = liked
+        saveLikedTracks(liked)
+
+        backup.musicSource
+            ?.let { name -> SourceSetting.entries.firstOrNull { it.name == name } }
+            ?.let { sourcePreferences.set(it) }
+
+        return RestoreReport(
+            playlists = backup.playlists.size,
+            likedTracks = liked.size,
+            recentTracks = backup.recentTracks.size,
+            playStats = backup.playStats.size,
+            source = backup.musicSource
+        )
+    }
+
+    private companion object {
+        /**
+         * How long Home's rows are considered fresh.
+         *
+         * Six hours is a deliberate middle: long enough that switching away from
+         * the app and back never costs a network round trip, short enough that
+         * "left it open overnight" is self-healing by the next morning.
+         *
+         * This is a **floor on freshness, not a guarantee**. There is no push
+         * channel for these feeds, so the rows are only as new as the last fetch,
+         * and the fetch that most users will actually experience is the one on
+         * every cold start — see [refreshHomeIfStale].
+         */
+        const val HOME_ROWS_MAX_AGE_MS = 6 * 60 * 60 * 1000L
+
+        const val KEY_SEARCH_HISTORY = "search_history"
+        const val MAX_SEARCH_HISTORY = 10
+
+        /** One character matches almost everything, so it is not worth a chip. */
+        const val MIN_SEARCH_HISTORY_LENGTH = 2
+
+        /**
+         * Autoplay only bothers searching the catalogue when the local pool
+         * can't supply this many tracks — enough to keep playing for a while.
+         */
+        const val AUTOPLAY_MIN_TRACKS = 5
+
+        /** Upper bound on what one autoplay extension appends. */
+        const val AUTOPLAY_MAX_TRACKS = 10
     }
 
     override fun onCleared() {

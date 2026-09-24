@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.components
+package com.piroman.elara.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
@@ -36,20 +36,24 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.screens.BrowsePlaylistScreen
-import com.aesthetic.spotify.ui.screens.HomeScreen
-import com.aesthetic.spotify.ui.screens.LibraryScreen
-import com.aesthetic.spotify.ui.screens.PlaylistDetailScreen
-import com.aesthetic.spotify.ui.screens.SearchScreen
-import com.aesthetic.spotify.ui.theme.AuraScaffoldSurface
-import com.aesthetic.spotify.ui.theme.AuraTextPrimary
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
-import com.aesthetic.spotify.ui.theme.Motion
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.screens.BrowsePlaylistScreen
+import com.piroman.elara.ui.screens.DownloadsScreen
+import com.piroman.elara.ui.screens.HomeScreen
+import com.piroman.elara.ui.screens.LibraryScreen
+import com.piroman.elara.ui.screens.ListeningStatsScreen
+import com.piroman.elara.ui.screens.PlayerSettingsScreen
+import com.piroman.elara.ui.screens.PlaylistDetailScreen
+import com.piroman.elara.ui.screens.SearchScreen
+import com.piroman.elara.ui.theme.AuraScaffoldSurface
+import com.piroman.elara.ui.theme.AuraTextPrimary
+import com.piroman.elara.ui.theme.AuraTextSecondary
+import com.piroman.elara.ui.theme.Motion
 
 sealed class Screen(val route: String, val label: String, val icon: @Composable () -> Unit) {
     object Home : Screen("home", "Home", { Icon(Icons.Default.Home, contentDescription = null) })
@@ -85,6 +89,22 @@ private fun screenEnter(): EnterTransition =
 
 private fun screenExit(): ExitTransition =
     fadeOut(tween(Motion.Standard, easing = Motion.StandardEasing))
+
+/**
+ * Switches to a bottom-bar tab.
+ *
+ * Extracted because Home's category tiles navigate to Search as well, and these
+ * three options are exactly the kind that diverge silently — a mismatch surfaces
+ * much later as "back goes somewhere unexpected". One definition means a
+ * category tap and a Search-tab tap produce the same back stack.
+ */
+private fun NavHostController.openTab(route: String) {
+    navigate(route) {
+        popUpTo(graph.findStartDestination().id) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
+    }
+}
 
 @Composable
 fun MainScaffold(viewModel: MainViewModel = viewModel()) {
@@ -156,15 +176,7 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
                                 selected = currentDestination?.hierarchy
                                     ?.any { it.route == screen.route } == true,
                                 colors = itemColors,
-                                onClick = {
-                                    navController.navigate(screen.route) {
-                                        popUpTo(navController.graph.findStartDestination().id) {
-                                            saveState = true
-                                        }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                }
+                                onClick = { navController.openTab(screen.route) }
                             )
                         }
                     }
@@ -184,15 +196,40 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
                     popExitTransition = { screenExit() }
                 ) {
                     composable(Screen.Home.route) {
-                        HomeScreen(viewModel, onOpenBrowse = {
-                            navController.navigate("browse_playlist")
-                        })
+                        HomeScreen(
+                            viewModel,
+                            onOpenBrowse = { navController.navigate("browse_playlist") },
+                            onOpenCategory = { query ->
+                                // A category tile has no feed of its own (see
+                                // `HomeCategories`), so it opens Search with its own
+                                // name as the query. `setSearchQuery` is the state the
+                                // search pipeline already observes, so results load
+                                // with no second code path.
+                                viewModel.setSearchQuery(query)
+                                navController.openTab(Screen.Search.route)
+                            }
+                        )
                     }
                     composable(Screen.Search.route) { SearchScreen(viewModel) }
                     composable(Screen.Library.route) {
-                        LibraryScreen(viewModel, onOpenPlaylist = { id ->
-                            navController.navigate("playlist/$id")
-                        })
+                        LibraryScreen(
+                            viewModel,
+                            onOpenPlaylist = { id ->
+                                navController.navigate("playlist/$id")
+                            },
+                            onOpenDownloads = {
+                                navController.navigate("downloads")
+                            },
+                            onOpenStats = {
+                                navController.navigate("listening_stats")
+                            }
+                        )
+                    }
+                    composable("downloads") {
+                        DownloadsScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
+                        )
                     }
                     composable("playlist/{playlistId}") { backStackEntry ->
                         val playlistId = backStackEntry.arguments?.getString("playlistId")
@@ -210,6 +247,18 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
                                 viewModel.clearBrowsePlaylist()
                                 navController.popBackStack()
                             }
+                        )
+                    }
+                    composable("player_settings") {
+                        PlayerSettingsScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("listening_stats") {
+                        ListeningStatsScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
                         )
                     }
                 }
@@ -271,6 +320,10 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
                         // set would make it pop back into the shell on collapse.
                         viewModel.setQueueOpen(false)
                         viewModel.setPlayerExpanded(false)
+                    },
+                    onSettings = {
+                        viewModel.setPlayerExpanded(false)
+                        navController.navigate("player_settings")
                     }
                 )
             }

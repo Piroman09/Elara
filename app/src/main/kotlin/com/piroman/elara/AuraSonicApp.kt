@@ -1,11 +1,11 @@
-package com.aesthetic.spotify
+package com.piroman.elara
 
 import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
-import com.aesthetic.spotify.data.diagnostics.StartupTiming
+import com.piroman.elara.data.diagnostics.StartupTiming
 
 /**
  * Process-wide app class. Its only job is to install a shared Coil

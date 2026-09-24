@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.data.lyrics
+package com.piroman.elara.data.lyrics
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

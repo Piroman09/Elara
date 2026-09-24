@@ -1,8 +1,7 @@
-package com.aesthetic.spotify.ui.screens
+package com.piroman.elara.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,14 +18,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -41,14 +35,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.components.AddToPlaylistDialog
-import com.aesthetic.spotify.ui.components.TrackArtwork
-import com.aesthetic.spotify.ui.theme.AuraBg
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
-import com.aesthetic.spotify.ui.theme.AuraPurple
-import com.aesthetic.spotify.ui.theme.AuraSuccess
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.ui.LazyKeys
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.components.AddToPlaylistDialog
+import com.piroman.elara.ui.components.PlayShuffleRow
+import com.piroman.elara.ui.components.TrackArtwork
+import com.piroman.elara.ui.theme.AuraBg
+import com.piroman.elara.ui.theme.AuraTextSecondary
+import com.piroman.elara.ui.theme.AuraPurple
+import com.piroman.elara.ui.theme.AuraSuccess
 
 /** Browsed editorial playlist (JioSaavn featured) — browsing only, not in the user's library. */
 @Composable
@@ -98,7 +94,24 @@ fun BrowsePlaylistScreen(
 
             else -> {
                 val playlist = browse!!
+                // Derived from the *collected* `playlists` state rather than
+                // `PlaylistManager.findByName`: this has to recompose when a save
+                // lands, or the label would keep saying "Save to Library" until
+                // the screen is reopened. Same case-insensitive rule as
+                // findByName, so the two cannot disagree — and there is no
+                // ViewModel helper to duplicate it (see MainViewModel).
                 val saved = playlists.any { it.name.equals(playlist.title, ignoreCase = true) }
+
+                // Lazy keys: identity **plus an occurrence suffix**, never the
+                // bare id. These tracks come straight from the JioSaavn playlist
+                // response with a plain `mapNotNull` and no de-duplication, and
+                // this same list is what "Save to Library" copies verbatim into a
+                // playlist, so nothing guarantees the ids are distinct. A
+                // duplicate key crashes the list rather than degrading
+                // gracefully. See LazyKeys.
+                val tracksKeyed = remember(playlist) {
+                    LazyKeys.withOccurrence(playlist.tracks) { it.id }
+                }
 
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -141,46 +154,29 @@ fun BrowsePlaylistScreen(
 
                         Spacer(modifier = Modifier.height(20.dp))
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Button(
-                                onClick = {
-                                    if (playlist.tracks.isNotEmpty()) {
-                                        viewModel.playTrack(playlist.tracks.first(), playlist.tracks)
-                                    }
-                                },
-                                enabled = playlist.tracks.isNotEmpty(),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color.White,
-                                    contentColor = Color.Black,
-                                    disabledContainerColor = Color.White.copy(alpha = 0.3f)
-                                )
-                            ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Play", fontWeight = FontWeight.Bold)
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    if (playlist.tracks.isNotEmpty()) {
-                                        viewModel.playTrack(playlist.tracks.random(), playlist.tracks)
-                                    }
-                                },
-                                enabled = playlist.tracks.isNotEmpty()
-                            ) {
-                                Icon(Icons.Default.Shuffle, contentDescription = null, tint = Color.White)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Shuffle", color = Color.White, fontWeight = FontWeight.Bold)
-                            }
-                        }
+                        PlayShuffleRow(
+                            onPlay = {
+                                if (playlist.tracks.isNotEmpty()) {
+                                    viewModel.playTrack(playlist.tracks.first(), playlist.tracks)
+                                }
+                            },
+                            onShuffle = {
+                                if (playlist.tracks.isNotEmpty()) {
+                                    viewModel.playTrack(playlist.tracks.random(), playlist.tracks)
+                                }
+                            },
+                            enabled = playlist.tracks.isNotEmpty()
+                        )
 
                         Spacer(modifier = Modifier.height(24.dp))
                     }
 
                     items(
-                        items = playlist.tracks,
-                        key = { it.id },
+                        items = tracksKeyed,
+                        key = { it.second },
                         contentType = { "track" }
-                    ) { track ->
+                    ) { item ->
+                        val track = item.first
                         SearchTrackItem(
                             track = track,
                             onClick = { viewModel.playTrack(track, playlist.tracks) },

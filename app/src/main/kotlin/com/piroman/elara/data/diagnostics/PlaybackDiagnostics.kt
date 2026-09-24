@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.data.diagnostics
+package com.piroman.elara.data.diagnostics
 
 import android.content.Context
 import android.util.Log

@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.data.diagnostics
+package com.piroman.elara.data.diagnostics
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

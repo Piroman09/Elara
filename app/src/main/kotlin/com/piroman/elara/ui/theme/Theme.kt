@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.theme
+package com.piroman.elara.ui.theme
 
 import android.app.Activity
 import androidx.compose.material3.MaterialTheme

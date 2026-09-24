@@ -1,21 +1,24 @@
-package com.aesthetic.spotify.data.download
+package com.piroman.elara.data.download
 
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.util.Log
 import android.widget.Toast
-import com.aesthetic.spotify.data.diagnostics.PlaybackDiagnostics
-import com.aesthetic.spotify.data.diagnostics.StartupTiming
-import com.aesthetic.spotify.data.model.SafeGson
-import com.aesthetic.spotify.data.model.Track
-import com.google.gson.reflect.TypeToken
+import com.piroman.elara.data.diagnostics.PlaybackDiagnostics
+import com.piroman.elara.data.diagnostics.StartupTiming
+import com.piroman.elara.data.model.SafeGson
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.data.model.sanitized
+import com.piroman.elara.data.playlist.AtomicFileWrite
+import com.piroman.elara.data.model.listTypeOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -58,8 +61,39 @@ class DownloadManager private constructor(private val context: Context) {
         data class Error(val message: String) : State()
     }
 
+    /**
+     * One downloaded track: the [Track] it belongs to and where the audio lives.
+     *
+     * **Neither parameter has a default, and that is load-bearing.** Kotlin emits a
+     * synthetic no-arg constructor only when *every* parameter has one, so Gson
+     * cannot instantiate this through the constructor and falls back to `Unsafe`
+     * allocation — where an absent key becomes a **null in a non-null property**.
+     * [track] is read at ten call sites as `it.track.id`, so a null there is a
+     * crash rather than a blank row.
+     *
+     * [repaired] catches that on the way in, which is why `loadIndex` filters
+     * through it. Adding a field here means adding a check there — or giving the
+     * new field a default, which restores the no-arg constructor and makes the
+     * whole class safe at once (what `Playlist` does).
+     */
     data class Entry(val track: Track, val path: String)
 
+    /**
+     * A download the system agent has accepted but not yet finished.
+     *
+     * **No parameter has a default, and that is load-bearing in a way that is easy
+     * to miss:** Kotlin only emits a synthetic no-arg constructor when *every*
+     * parameter has one, so Gson cannot instantiate this through the constructor
+     * and falls back to `Unsafe` allocation — where an absent key becomes a null
+     * in a non-null property. Both fields are always written today, so a
+     * well-formed queue is fine, but **adding a field here would silently put a
+     * null into every existing install's queue.** [loadPending] filters through
+     * [isUsable] for exactly that reason; do not remove that guard.
+     *
+     * The proper fix, when someone has the appetite for it, is the one `PlayStat`
+     * already uses — a nullable reference type plus a drop-on-load filter — which
+     * is also what `DownloadManager.Entry` still needs.
+     */
     private data class Pending(
         val downloadId: Long,
         val track: Track,
@@ -91,6 +125,20 @@ class DownloadManager private constructor(private val context: Context) {
             .build()
     }
 
+    /**
+     * The downloaded tracks, newest first.
+     *
+     * **Mutate it with `update { }`, never with `value = …`.** The playlist and
+     * history stores can get away with a plain assignment because every one of
+     * their mutators runs on the main thread. This one cannot: it is written from
+     * [scope], which is `Dispatchers.IO`, and `download(track)` starts a coroutine
+     * per tap — so two `markDone` calls genuinely overlap. `value = current
+     * .filter { … }` is a read-modify-write: both readers see the same list, and
+     * the later assignment discards the other's entry. The user-visible result is
+     * a download that finishes and then is simply not in the list. `update`
+     * retries against the current value, so concurrent writes compose instead of
+     * clobbering.
+     */
     private val _entries =
         MutableStateFlow<List<Entry>>(StartupTiming.measure("DownloadManager.loadIndex") { loadIndex() })
     val entries: StateFlow<List<Entry>> = _entries
@@ -98,15 +146,52 @@ class DownloadManager private constructor(private val context: Context) {
     private val _states = MutableStateFlow<Map<String, State>>(emptyMap())
     val states: StateFlow<Map<String, State>> = _states
 
+    /**
+     * Total bytes the downloaded files occupy on disk, for the Downloads screen.
+     *
+     * **Derived, not stored.** The index records paths, not sizes, and a file can
+     * be deleted out from under us (storage cleared, another app removing it), so
+     * a persisted total would drift. Summing `File.length()` when the entry list
+     * changes cannot go stale.
+     *
+     * Recomputed on [scope] (`Dispatchers.IO`) rather than where [entries] is
+     * written: each entry costs a `stat()`, and `markDone` runs inside a download
+     * coroutine that must not be slowed by it — while the screen reads this
+     * during composition, where disk I/O is forbidden outright.
+     *
+     * **`null` means "not computed yet", not zero.** The sum runs off the main
+     * thread, so there is a window after launch where the entry list is already
+     * known but the total is not. Reporting `0` there would flash a wrong
+     * "130 songs · 0 B" on the Downloads screen; `null` lets the caller omit the
+     * figure until it is real.
+     */
+    private val _totalBytes = MutableStateFlow<Long?>(null)
+    val totalBytes: StateFlow<Long?> = _totalBytes
+
     init {
         migrateLegacyExternalDownloads()
         scope.launch {
             dir().listFiles { f -> f.name.endsWith(".tmp") }?.forEach { it.delete() }
             reconcilePending()
-            val valid = _entries.value.filter { File(it.path).exists() }
-            if (valid.size != _entries.value.size) {
-                _entries.value = valid
+            val before = _entries.value
+            // The predicate is applied *inside* `update` rather than to a snapshot:
+            // a download finishing between a snapshot read and the assignment would
+            // have its entry dropped by this reconcile.
+            _entries.update { current -> current.filter { File(it.path).exists() } }
+            val valid = _entries.value
+            if (valid.size != before.size) {
                 saveIndex(valid)
+            }
+        }
+        // Collecting the StateFlow rather than recomputing at each of the five
+        // places that write `_entries` — markDone, delete, the reconcile above,
+        // the backup restore and the index load — means a future sixth writer
+        // cannot forget to update the total.
+        scope.launch {
+            entries.collect { current ->
+                _totalBytes.value = current.sumOf { entry ->
+                    runCatching { File(entry.path).length() }.getOrDefault(0L)
+                }
             }
         }
     }
@@ -119,25 +204,63 @@ class DownloadManager private constructor(private val context: Context) {
 
     fun isDownloaded(trackId: String): Boolean = localPath(trackId) != null
 
-    /** Download [track]; [resolveUrl] supplies the full-length stream URL. */
+    /** Fire-and-forget single download (used by per-track taps). */
     fun download(track: Track, resolveUrl: suspend (Track) -> String?) {
         if (isDownloaded(track.id) || !inFlight.add(track.id)) return
         scope.launch {
             diag("START id=${track.id} title=${track.title}")
-            setState(track.id, State.Downloading(-1f))
-            try {
-                val url = resolveUrl(track) ?: track.audioUrl
-                diag("RESOLVED id=${track.id} url=${url.take(90)}")
-                if (url.isBlank()) throw IOException("No stream URL resolved (${track.source.label})")
+            doDownload(track, resolveUrl)
+        }
+    }
 
-                val ext = if (url.substringBefore('?').endsWith(".mp3")) "mp3" else "m4a"
-                val final = File(dir(), "${track.id}.$ext")
-                if (final.exists() && final.length() > 0) {
-                    markDone(track, final)
-                    return@launch
-                }
+    /**
+     * Downloads one track and **blocks** until it finishes or fails. Used by
+     * [downloadAll] so a batch runs sequentially rather than swamping the
+     * network with every track at once.
+     */
+    suspend fun downloadOne(track: Track, resolveUrl: suspend (Track) -> String?): Result<Unit> {
+        if (isDownloaded(track.id)) return Result.success(Unit)
+        if (!inFlight.add(track.id)) {
+            // Another download for this track is already running — wait it out.
+            while (inFlight.contains(track.id)) { delay(200) }
+            return Result.success(Unit)
+        }
+        diag("BATCH_START id=${track.id} title=${track.title}")
+        return doDownload(track, resolveUrl)
+    }
 
-                // Primary: system download agent (background-capable).
+    /**
+     * Queue every undownloaded track in [tracks] for sequential download.
+     * One-at-a-time keeps the scraped API from rate-limiting the app.
+     */
+    fun downloadAll(tracks: List<Track>, resolveUrl: suspend (Track) -> String?) {
+        val todo = tracks.filterNot { isDownloaded(it.id) }
+        if (todo.isEmpty()) return
+        scope.launch {
+            todo.forEach { track ->
+                downloadOne(track, resolveUrl)
+                delay(800) // Polite gap between requests.
+            }
+        }
+    }
+
+    /**
+     * The actual transfer, shared by the fire-and-forget and batch paths.
+     * Returns success only when the file is on disk and indexed.
+     */
+    private suspend fun doDownload(track: Track, resolveUrl: suspend (Track) -> String?): Result<Unit> {
+        setState(track.id, State.Downloading(-1f))
+        return try {
+            val url = resolveUrl(track) ?: track.audioUrl
+            diag("RESOLVED id=${track.id} url=${url.take(90)}")
+            if (url.isBlank()) throw IOException("No stream URL resolved (${track.source.label})")
+
+            val ext = if (url.substringBefore('?').endsWith(".mp3")) "mp3" else "m4a"
+            val final = File(dir(), "${track.id}.$ext")
+            if (final.exists() && final.length() > 0) {
+                markDone(track, final)
+                Result.success(Unit)
+            } else {
                 val downloadId = runCatching { enqueueSystem(track, url, ext) }
                     .onFailure { Log.e(TAG, "enqueue failed: ${it.message}") }
                     .getOrDefault(-1L)
@@ -145,19 +268,17 @@ class DownloadManager private constructor(private val context: Context) {
                 if (downloadId > 0) {
                     watchSystem(track, downloadId, final)
                 } else {
-                    // Fallback writes app-private (public dir needs the system
-                    // agent on Android 10+); offline playback still works.
-                    val privateFinal = File(dir(), "${track.id}.$ext")
-                    transferDirect(track, url, privateFinal)
+                    transferDirect(track, url, final)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Download failed: ${e.message}")
-                diag("FAIL id=${track.id} error=${e.message}")
-                setState(track.id, State.Error(e.message ?: "Download failed"))
-                toast("Download failed: ${e.message}")
-            } finally {
-                inFlight.remove(track.id)
+                Result.success(Unit)
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Download failed: ${e.message}")
+            diag("FAIL id=${track.id} error=${e.message}")
+            setState(track.id, State.Error(e.message ?: "Download failed"))
+            Result.failure(e)
+        } finally {
+            inFlight.remove(track.id)
         }
     }
 
@@ -175,7 +296,7 @@ class DownloadManager private constructor(private val context: Context) {
                 )
             }
         }
-        _entries.value = _entries.value.filter { it.track.id != trackId }
+        _entries.update { current -> current.filter { it.track.id != trackId } }
         saveIndex(_entries.value)
         setState(trackId, null)
     }
@@ -315,24 +436,80 @@ class DownloadManager private constructor(private val context: Context) {
         }
     }
 
+    /**
+     * Records a download the system agent has accepted.
+     *
+     * Through [AtomicFileWrite] for the same reason as [saveIndex], and the stakes
+     * are higher here: this file is the only mapping from a system download id to
+     * the app's track. A truncated queue is not just missing bookkeeping — the
+     * download still completes, and nothing is left that knows what to do with
+     * the file, so the user's download silently never appears.
+     */
     private fun savePending(pending: Pending) {
         val all = loadPending().filterNot { it.track.id == pending.track.id } + pending
-        runCatching { pendingFile.writeText(gson.toJson(all)) }
+        runCatching { AtomicFileWrite.write(pendingFile, gson.toJson(all)) }
     }
 
     private fun clearPending(downloadId: Long) {
         val all = loadPending().filterNot { it.downloadId == downloadId }
-        runCatching { pendingFile.writeText(gson.toJson(all)) }
+        runCatching { AtomicFileWrite.write(pendingFile, gson.toJson(all)) }
     }
 
+    /**
+     * Reads the in-progress download queue.
+     *
+     * Reports through [PlaybackDiagnostics] because this used to swallow every
+     * exception to an empty list **without logging anything at all** — so a queue
+     * that failed to load was indistinguishable from one that was never written,
+     * and the only symptom was a download that never showed up.
+     *
+     * Entries that cannot be used are dropped rather than kept; see [isUsable].
+     * That also protects [savePending]'s `it.track.id`, which would otherwise
+     * dereference a null on the next save and make the loss permanent.
+     */
     private fun loadPending(): List<Pending> = try {
         if (pendingFile.exists()) {
-            val type = object : TypeToken<List<Pending>>() {}.type
-            gson.fromJson(pendingFile.readText(), type) ?: emptyList()
-        } else emptyList()
+            val type = listTypeOf(Pending::class.java)
+            val parsed: List<Pending>? = gson.fromJson(pendingFile.readText(), type)
+            val usable = parsed.orEmpty().filter { it.isUsable() }
+            PlaybackDiagnostics.append(
+                context,
+                "downloads: pending ${usable.size} of ${parsed?.size ?: 0} resumable"
+            )
+            usable
+        } else {
+            emptyList()
+        }
     } catch (e: Exception) {
+        Log.e(TAG, "loadPending: ${e.message}")
+        PlaybackDiagnostics.append(
+            context,
+            "downloads: PENDING LOAD FAILED ${e.message} — in-progress downloads cannot be resumed"
+        )
         emptyList()
     }
+
+    /**
+     * Whether a deserialised [Pending] can actually be used to resume a download.
+     *
+     * The null check looks redundant because [track] is declared non-null, and it
+     * is not redundant: [Pending] has **no defaulted parameters**, so Kotlin emits
+     * no synthetic no-arg constructor and Gson cannot instantiate through the
+     * constructor — it falls back to `Unsafe` allocation, where a *missing* key
+     * arrives as a null in a non-null property. The declared type is a promise the
+     * runtime does not enforce for reflectively-populated objects. Same reasoning
+     * as `Track.sanitized()`, including the suppression.
+     *
+     * `isNullOrBlank()` rather than `isNotBlank()` on purpose: the latter has a
+     * non-null receiver and would throw on exactly the null it is meant to catch.
+     *
+     * The filter never drops a legitimate entry — a system download id is always
+     * positive and `finalPath` is always a real path — so this is a guard, not a
+     * behaviour change.
+     */
+    @Suppress("SENSELESS_COMPARISON")
+    private fun Pending.isUsable(): Boolean =
+        track != null && downloadId > 0L && !finalPath.isNullOrBlank()
 
     // ── Fallback: direct in-app transfer ─────────────────────────────────
 
@@ -376,8 +553,9 @@ class DownloadManager private constructor(private val context: Context) {
     // ── Shared helpers ───────────────────────────────────────────────────
 
     private suspend fun markDone(track: Track, final: File) {
-        _entries.value = listOf(Entry(track, final.absolutePath)) +
-                _entries.value.filter { it.track.id != track.id }
+        _entries.update { current ->
+            listOf(Entry(track, final.absolutePath)) + current.filter { it.track.id != track.id }
+        }
         saveIndex(_entries.value)
         setState(track.id, State.Done)
         diag("OK id=${track.id} file=${final.name} bytes=${final.length()}")
@@ -401,21 +579,63 @@ class DownloadManager private constructor(private val context: Context) {
         PlaybackDiagnostics.append(context, "DL  $line")
     }
 
+    /**
+     * Rewrites the index of downloaded files.
+     *
+     * Through [AtomicFileWrite], for the same reason `PlaylistManager` uses it:
+     * this file is the app's only record of *what* is downloaded, and
+     * [loadIndex] answers a parse failure with `emptyList()`. A plain
+     * `writeText` truncates before it writes, so being killed mid-write would
+     * leave a fragment that fails to parse — and the app would come back
+     * believing nothing had ever been downloaded, with the next save making that
+     * permanent. The audio files would still be on disk; the app would simply
+     * have forgotten them.
+     */
     private fun saveIndex(entries: List<Entry>) {
         try {
-            indexFile.writeText(gson.toJson(entries))
+            AtomicFileWrite.write(indexFile, gson.toJson(entries))
         } catch (e: Exception) {
             Log.e(TAG, "saveIndex: ${e.message}")
         }
     }
 
+    /**
+     * Reads the download index.
+     *
+     * Reports what it found through [PlaybackDiagnostics] for the same reason the
+     * playlist and history stores do: a failed load and an empty store draw
+     * exactly the same UI, so without a line in the log "my downloads vanished"
+     * has no evidence trail at all.
+     *
+     * Everything parsed goes through [repairIndex], which drops entries whose
+     * `track` came back null from Gson's `Unsafe` path and sanitises the track it
+     * keeps. Dropping is safe: an entry with no track cannot be matched against a
+     * download, shown, or removed. The dropped count is reported, so a non-zero
+     * figure here is direct evidence that the hazard was real.
+     */
     private fun loadIndex(): List<Entry> = try {
         if (indexFile.exists()) {
-            val type = object : TypeToken<List<Entry>>() {}.type
-            gson.fromJson(indexFile.readText(), type) ?: emptyList()
-        } else emptyList()
+            val type = listTypeOf(Entry::class.java)
+            val parsed: List<Entry>? = gson.fromJson(indexFile.readText(), type)
+            val result = repairIndex(parsed)
+            val dropped = parsed.orEmpty().size - result.size
+            PlaybackDiagnostics.append(
+                context,
+                "downloads: loaded ${result.size} from ${indexFile.length()}B" +
+                    if (dropped > 0) " (dropped $dropped unusable)" else ""
+            )
+            result
+        } else {
+            // Separates "nothing downloaded yet" from "the index is gone".
+            PlaybackDiagnostics.append(context, "downloads: no index at ${indexFile.absolutePath}")
+            emptyList()
+        }
     } catch (e: Exception) {
         Log.e(TAG, "loadIndex: ${e.message}")
+        PlaybackDiagnostics.append(
+            context,
+            "downloads: LOAD FAILED (${indexFile.length()}B) ${e.message} — list reads as EMPTY"
+        )
         emptyList()
     }
 
@@ -436,9 +656,11 @@ class DownloadManager private constructor(private val context: Context) {
                             f.copyTo(dest, overwrite = false).length() == f.length()
                         }.getOrDefault(false)
                         if (copied) {
-                            _entries.value = _entries.value.map { entry ->
-                                if (entry.path == f.absolutePath) entry.copy(path = dest.absolutePath)
-                                else entry
+                            _entries.update { current ->
+                                current.map { entry ->
+                                    if (entry.path == f.absolutePath) entry.copy(path = dest.absolutePath)
+                                    else entry
+                                }
                             }
                             saveIndex(_entries.value)
                             f.delete()
@@ -450,3 +672,45 @@ class DownloadManager private constructor(private val context: Context) {
         }
     }
 }
+
+/**
+ * Repairs one index entry as it comes off disk, or rejects it.
+ *
+ * [DownloadManager.Entry] has no defaulted constructor parameters, so Kotlin emits no
+ * synthetic no-arg constructor and Gson cannot instantiate it through the constructor —
+ * it falls back to `Unsafe` allocation, where a **missing key becomes a null in a
+ * non-null property**. The declared type is a promise the runtime does not enforce for
+ * reflectively-populated objects. Same reasoning as `Track.sanitized()`, including the
+ * suppression: `isNullOrBlank()` on the path rather than `isNotBlank()`, because the
+ * latter has a non-null receiver and would throw on exactly the null it guards.
+ *
+ * Returning `null` — rather than a patched entry — is the correct rejection. An entry
+ * with no usable track has no id to match a download against, no title to show and no
+ * artwork to draw, so it can be neither listed nor removed, only crashed on. The audio
+ * file stays on disk either way; the index row pointing at it is all that is dropped.
+ *
+ * Top-level and free of `Context` so it is covered by JVM tests — the same reason
+ * `PlaybackDiagnostics.tailLines` takes a `File`.
+ */
+@Suppress("SENSELESS_COMPARISON")
+internal fun DownloadManager.Entry.repaired(): DownloadManager.Entry? {
+    // Both are declared non-null; the `Unsafe` path can still put a null in either.
+    if (track == null || path.isNullOrBlank()) return null
+    // `sanitized()` is not strictly needed here — `SafeGson` already registers a Track
+    // deserializer, so a track parsed through it is normalised at any depth. It is kept
+    // because it is what makes the `id.isBlank()` check below *safe*: on a raw parse the
+    // id can be a null inside a non-null String, and `.isBlank()` on that is an NPE.
+    val cleanTrack = track.sanitized()
+    if (cleanTrack.id.isBlank()) return null
+    return DownloadManager.Entry(cleanTrack, path)
+}
+
+/**
+ * Applies [repaired] across a parsed index, dropping the entries it rejects.
+ *
+ * A `null` input is normal rather than an error: Gson returns null for the literal
+ * document `null`, and an empty list is the correct reading of it.
+ */
+internal fun repairIndex(
+    parsed: List<DownloadManager.Entry>?
+): List<DownloadManager.Entry> = parsed.orEmpty().mapNotNull { it.repaired() }

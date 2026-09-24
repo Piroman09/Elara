@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.data.lyrics
+package com.piroman.elara.data.lyrics
 
 /**
  * Turns catalogue metadata into queries a lyrics database can actually match.

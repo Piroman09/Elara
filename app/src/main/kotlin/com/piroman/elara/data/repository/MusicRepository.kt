@@ -1,23 +1,23 @@
-package com.aesthetic.spotify.data.repository
+package com.piroman.elara.data.repository
 
 import android.util.Log
-import com.aesthetic.spotify.data.lyrics.LyricQuery
-import com.aesthetic.spotify.data.model.LyricLine
-import com.aesthetic.spotify.data.model.MusicSource
-import com.aesthetic.spotify.data.model.Playlist
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.data.network.ClientIdProvider
-import com.aesthetic.spotify.data.network.JioSaavnApi
-import com.aesthetic.spotify.data.network.JioSaavnCrypto
-import com.aesthetic.spotify.data.network.LyricsApi
-import com.aesthetic.spotify.data.network.MusixmatchClient
-import com.aesthetic.spotify.data.network.MusicApi
-import com.aesthetic.spotify.data.network.RetrofitClient
-import com.aesthetic.spotify.data.network.SCSearchResponse
-import com.aesthetic.spotify.data.network.SoundCloudApi
-import com.aesthetic.spotify.data.network.SpotifyPlaylistImporter
-import com.aesthetic.spotify.data.network.YouTubeMusicApi
-import com.aesthetic.spotify.data.source.SourceSetting
+import com.piroman.elara.data.lyrics.LyricQuery
+import com.piroman.elara.data.model.LyricLine
+import com.piroman.elara.data.model.MusicSource
+import com.piroman.elara.data.model.Playlist
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.data.network.ClientIdProvider
+import com.piroman.elara.data.network.JioSaavnApi
+import com.piroman.elara.data.network.JioSaavnCrypto
+import com.piroman.elara.data.network.LyricsApi
+import com.piroman.elara.data.network.MusixmatchClient
+import com.piroman.elara.data.network.MusicApi
+import com.piroman.elara.data.network.RetrofitClient
+import com.piroman.elara.data.network.SCSearchResponse
+import com.piroman.elara.data.network.SoundCloudApi
+import com.piroman.elara.data.network.SpotifyPlaylistImporter
+import com.piroman.elara.data.network.YouTubeMusicApi
+import com.piroman.elara.data.source.SourceSetting
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -33,6 +33,12 @@ class MusicRepository(
 ) {
     companion object {
         private const val TAG = "MusicRepository"
+
+        /**
+         * Cap on a YouTube Music Home row. The songs-filtered search returns 30;
+         * 25 keeps the row scrollable without turning it into a long trawl.
+         */
+        private const val YT_ROW_LIMIT = 25
         /**
          * Per-track accent colours, as hex strings because [Track.accentColor]
          * is persisted in JSON.
@@ -155,13 +161,136 @@ class MusicRepository(
         emptyList()
     }
 
-    data class FeaturedPlaylist(
+    /**
+     * One tappable tile on Home: a featured playlist, a chart, or an album.
+     *
+     * Named `FeaturedPlaylist` until 2026-09-21, which stopped being true the
+     * moment Home gained charts and new releases — a chart happens to also be a
+     * playlist, but an album is not, and a type whose name lies about half its
+     * contents is how the wrong branch gets taken later.
+     *
+     * [kind] is what decides which `webapi.get` call opens the tile, and it comes
+     * straight from the feed's own `type` field rather than from the row it was
+     * rendered in — a tile must open correctly wherever it is shown.
+     */
+    data class BrowseTile(
         val id: String,
         val title: String,
         val subtitle: String,
         val image: String,
-        val token: String
+        val token: String,
+        val kind: Kind = Kind.PLAYLIST
+    ) {
+        /** Which endpoint opens this tile, and therefore how its songs decode. */
+        enum class Kind { PLAYLIST, ALBUM }
+    }
+
+    /**
+     * Home's two chart rows, from a single `content.getCharts` call.
+     *
+     * The feed is one flat list of nine charts that happens to contain both
+     * kinds, so splitting it here means one HTTP request instead of two and
+     * removes any chance of the two rows disagreeing about what the feed said.
+     */
+    data class ChartRows(
+        val top: List<BrowseTile> = emptyList(),
+        val throwback: List<BrowseTile> = emptyList()
     )
+
+    /**
+     * The two rows `content.getAlbums` can back, from **one** request.
+     *
+     * The feed is mixed — 13 albums against 17 loose songs when this was measured
+     * — and both halves are usable. Splitting it here costs nothing and avoids a
+     * second call. The songs are not a degraded subset of the albums: each carries
+     * a full `more_info` with a playable `encrypted_media_url`, a duration, an
+     * artist and artwork, so they play directly.
+     */
+    data class NewReleaseRows(
+        val albums: List<BrowseTile> = emptyList(),
+        val songs: List<Track> = emptyList()
+    )
+
+    /**
+     * Home's YouTube Music rows, from two parallel songs-filtered searches.
+     *
+     * These are **curated queries, not editorial feeds**, and the rows are
+     * labelled "YouTube Music …" so they do not pretend otherwise. That is a
+     * measured limitation, not a shortcut. Probed live against WEB_REMIX with the
+     * same client identity this app uses:
+     *
+     *  - `FEmusic_charts` returns *video* charts plus language tiles and a
+     *    "Top artists" carousel. Its 40 list rows are artists carrying
+     *    "2.25M subscribers" and **no `videoId`**, so nothing on that page is
+     *    playable — [YouTubeMusicApi.parseListItem] drops every one of them.
+     *  - Its chart playlists *are* browsable and do yield 20 real, playable
+     *    tracks ("Trending 20 India" → `playabilityStatus: OK`, itag-18 muxed
+     *    stream), but the rows are music videos: one title reads
+     *    "Full Video: Yaalalo Yaalalo | Irumudi | Ravi Teja | GV Prakash | …".
+     *    Real data, unusable as a card title.
+     *  - `FEmusic_new_releases` returns albums as two-row tiles, and this app has
+     *    no flow that opens a YouTube album — only JioSaavn tiles carry the
+     *    `webapi.get` token that [loadBrowsePlaylist] needs.
+     *  - `FEmusic_moods_and_genres` answers 200 with a `responseContext` and no
+     *    content at all for this client.
+     *
+     * What is left — and it is genuinely good — is filtered song search, which
+     * returns 30 rows with clean metadata. Hence two queries rather than two
+     * feeds. If YouTube ever exposes songs charts to this client, the queries
+     * below are the only thing that should change.
+     *
+     * **The second row is a genre, not "new songs"** (changed 2026-09-22). It was
+     * built from the query `"new songs"`, which does not return new songs: the
+     * label lied. Rendering that query through the app's own parser produced
+     * "Apna Bana Le (From *Bhediya*)", "Dilbar (From *Satyameva Jayate*)",
+     * "O Saki Saki (From *Batla House*)" and "Tum Hi Aana (From *Marjaavaan*)" —
+     * 2022, 2018, 2019 and 2019 releases — because YouTube's song search ranks by
+     * popularity, not by date, and this client has no "new songs" feed at all.
+     * A genre from the app's own [HomeScreen] category list keeps the row honest
+     * *and* distinct: measured at 20 rows, **zero** overlap with the first row,
+     * and no over-long entries.
+     */
+    data class YouTubeMusicRows(
+        val top: List<Track> = emptyList(),
+        val genre: List<Track> = emptyList()
+    )
+
+    /**
+     * The two queries behind [getYouTubeMusicRows], in row order.
+     *
+     * `"Hip-Hop"` is deliberately one of `HomeScreen.HomeCategories`' own entries,
+     * so the row speaks the app's existing vocabulary rather than inventing a
+     * taxonomy for the one source that has none.
+     */
+    private val youTubeRowQueries = listOf("top songs this week", "Hip-Hop")
+
+    suspend fun getYouTubeMusicRows(): YouTubeMusicRows = coroutineScope {
+        val top = async { youTubeRow(youTubeRowQueries[0]) }
+        val genre = async { youTubeRow(youTubeRowQueries[1]) }
+
+        val topTracks = top.await()
+        YouTubeMusicRows(
+            top = topTracks,
+            genre = YouTubeRowPolicy.withoutDuplicates(topTracks, genre.await())
+        )
+    }
+
+    /**
+     * One YouTube Music row: a songs-filtered search, minus anything that is not a
+     * plausible song.
+     *
+     * The shaping rules live in [YouTubeRowPolicy] so they are unit-tested — see
+     * that file for the 50-minute DJ set and the duplicated song that put them
+     * there. Nothing about either failure is visible as an error.
+     */
+    private suspend fun youTubeRow(query: String): List<Track> = try {
+        YouTubeRowPolicy.presentable(
+            YouTubeMusicApi.search(query, limit = YT_ROW_LIMIT, songsOnly = true)
+        )
+    } catch (e: Exception) {
+        Log.e(TAG, "YouTube Music row '$query' Error: ${e.message}")
+        emptyList()
+    }
 
     data class BrowsePlaylist(
         val token: String,
@@ -171,38 +300,139 @@ class MusicRepository(
         val tracks: List<Track>
     )
 
+    /**
+     * Maps a tile from any `content.get*` feed.
+     *
+     * The token comes from the tail of `perma_url`, which is the only stable
+     * handle these feeds give — the numeric `id` is **not** a valid `webapi.get`
+     * token (verified live: passing a chart's numeric id returns an empty
+     * playlist rather than an error, which is the failure mode that would have
+     * shipped silently).
+     *
+     * Titles arrive XML-escaped ("Jai Jai Ram (From &quot;Ramayana&quot;)"), so
+     * they go through [decodeHtmlEntities] like every other JioSaavn string.
+     */
+    private fun com.piroman.elara.data.network.JioFeaturedPlaylist.toBrowseTile(): BrowseTile? {
+        val tail = permaUrl?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: return null
+        val tileKind =
+            if (type.equals("album", ignoreCase = true)) BrowseTile.Kind.ALBUM
+            else BrowseTile.Kind.PLAYLIST
+        return BrowseTile(
+            id = id,
+            title = decodeHtmlEntities(title),
+            subtitle = subtitle?.takeIf { it.isNotBlank() }
+                ?: if (tileKind == BrowseTile.Kind.ALBUM) "Album" else "Playlist",
+            image = JioSaavnCrypto.hiResArt(image),
+            token = tail,
+            kind = tileKind
+        )
+    }
+
+    /**
+     * A chart whose title names a decade ("Hindi 1990s") rather than a current
+     * ranking. Used only to split Home's two chart rows, so a miss costs a tile
+     * its row, not correctness.
+     */
+    private val DECADE_CHART = Regex("""\b(?:19|20)\d0s\b""", RegexOption.IGNORE_CASE)
+
     /** Editorial playlists from JioSaavn for Home's browse row. */
-    suspend fun getFeaturedPlaylists(): List<FeaturedPlaylist> = try {
-        jioSaavn.getFeaturedPlaylists().data.mapNotNull { fp ->
-            val token = fp.permaUrl?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
-                ?: return@mapNotNull null
-            FeaturedPlaylist(
-                id = fp.id,
-                title = fp.title,
-                subtitle = fp.subtitle ?: "Playlist",
-                image = JioSaavnCrypto.hiResArt(fp.image),
-                token = token
-            )
-        }
+    suspend fun getFeaturedPlaylists(): List<BrowseTile> = try {
+        jioSaavn.getFeaturedPlaylists().data.mapNotNull { it.toBrowseTile() }
     } catch (e: Exception) {
         Log.e(TAG, "Featured playlists Error: ${e.message}")
         emptyList()
     }
 
-    /** Songs of an editorial playlist (browsed on Home, not saved to the library). */
-    suspend fun getPlaylistSongs(token: String, image: String): BrowsePlaylist? = try {
-        val resp = jioSaavn.getPlaylistByToken(token = token)
-        val tracks = resp.songs.mapNotNull { jioSongToTrack(it) }
+    /**
+     * Home's chart rows, split in one pass: current rankings vs decade
+     * retrospectives. Verified live 2026-09-21 as 5 and 4.
+     */
+    suspend fun getCharts(): ChartRows = try {
+        val tiles = jioSaavn.getCharts().mapNotNull { it.toBrowseTile() }
+        ChartRows(
+            top = tiles.filterNot { DECADE_CHART.containsMatchIn(it.title) },
+            throwback = tiles.filter { DECADE_CHART.containsMatchIn(it.title) }
+        )
+    } catch (e: Exception) {
+        Log.e(TAG, "Charts Error: ${e.message}")
+        ChartRows()
+    }
+
+    /**
+     * Home's "New releases" row.
+     *
+     * `content.getAlbums` is a mixed feed — 13 albums against 17 loose songs when
+     * this was written — so the filter is required, not defensive: an unfiltered
+     * tile would carry a song's perma-url and be opened as an album, returning
+     * nothing.
+     */
+    suspend fun getNewReleases(): NewReleaseRows = try {
+        val items = jioSaavn.getNewReleases().data
+        NewReleaseRows(
+            albums = items
+                .filter { it.type.equals("album", ignoreCase = true) }
+                .mapNotNull { it.toBrowseTile() },
+            // The other half of the same feed. Previously discarded outright.
+            songs = items
+                .filter { it.type.equals("song", ignoreCase = true) }
+                .mapNotNull { featuredItemToTrack(it) }
+        )
+    } catch (e: Exception) {
+        Log.e(TAG, "New releases Error: ${e.message}")
+        NewReleaseRows()
+    }
+
+    /**
+     * The titles people are searching for right now, for Home's chip row.
+     *
+     * Deliberately returns **strings**, not tiles: the feed mixes albums, songs and
+     * artists, and a mixed list has no single open action — the same reason the
+     * category row is search-backed. A search is honest for all three types.
+     *
+     * Blanks are dropped so the row can never render an empty chip.
+     */
+    suspend fun getTrendingSearches(): List<String> = try {
+        jioSaavn.getTopSearches()
+            .map { decodeHtmlEntities(it.title).trim() }
+            .filter { it.isNotEmpty() }
+    } catch (e: Exception) {
+        Log.e(TAG, "Top searches Error: ${e.message}")
+        emptyList()
+    }
+
+    /**
+     * Opens a Home tile — the songs of an editorial playlist, a chart, or an
+     * album. Browsed, not saved to the library.
+     *
+     * The tile's own [BrowseTile.title] is the fallback for the returned title
+     * because `webapi.get?type=playlist` answers with `listname`, not `title`,
+     * so `resp.title` is null for every playlist and the screen would otherwise
+     * be headed "Playlist" no matter which chart was tapped.
+     */
+    suspend fun getCollectionSongs(tile: BrowseTile): BrowsePlaylist? = try {
+        val (title, tracks) = when (tile.kind) {
+            BrowseTile.Kind.PLAYLIST -> {
+                val resp = jioSaavn.getPlaylistByToken(token = tile.token)
+                // `resp.tracks`, not `resp.songs` — the server has been seen to
+                // answer with `fullsongs` instead of `list`. See the model.
+                (resp.title ?: tile.title) to resp.tracks.mapNotNull { jioSongToTrack(it) }
+            }
+            BrowseTile.Kind.ALBUM -> {
+                val resp = jioSaavn.getAlbumByToken(token = tile.token)
+                (resp.title ?: tile.title) to resp.songs.mapNotNull { albumSongToTrack(it) }
+            }
+        }
         if (tracks.isEmpty()) null
         else BrowsePlaylist(
-            token = token,
-            title = resp.title ?: "Playlist",
+            token = tile.token,
+            title = title,
             subtitle = "JioSaavn • ${tracks.size} songs",
-            image = image,
+            image = tile.image,
             tracks = tracks
         )
     } catch (e: Exception) {
-        Log.e(TAG, "Playlist songs Error: ${e.message}")
+        Log.e(TAG, "Collection songs Error: ${e.message}")
         null
     }
 
@@ -263,29 +493,86 @@ class MusicRepository(
         val chartPlaylist = featured.firstOrNull { it.title.contains("chart", ignoreCase = true) }
             ?: featured.firstOrNull()
             ?: return emptyList()
-        return getPlaylistSongs(chartPlaylist.token, chartPlaylist.image)
+        return getCollectionSongs(chartPlaylist)
             ?.tracks?.take(15)
             ?: emptyList()
     }
 
-    private fun jioSongToTrack(s: com.aesthetic.spotify.data.network.JioSong): Track? {
-        val info = s.moreInfo ?: return null
+    /**
+     * The shared body of the two `more_info`-shaped song mappers.
+     *
+     * [jioSongToTrack] and [featuredItemToTrack] differ only in the type they read
+     * from: songs from `song.getDetails` / `webapi.get`, and the song items mixed
+     * into `content.getAlbums`, both put the stream in `more_info`. One copy means
+     * a fix to artist parsing or the artwork upgrade cannot land in one and miss
+     * the other. This is the "extract at three" point — the flat album payload
+     * keeps its own mapper, because it genuinely has no `more_info` object.
+     */
+    private fun trackFromMoreInfo(
+        id: String,
+        title: String,
+        subtitle: String?,
+        image: String?,
+        moreInfo: com.piroman.elara.data.network.JioMoreInfo?
+    ): Track? {
+        val info = moreInfo ?: return null
         // Guard only: a JioSaavn song without an encrypted media URL has no
         // playable stream. Binding this to a name implied it was used below.
         info.encryptedMediaUrl ?: return null
         return Track(
-            id = s.id,
-            title = decodeHtmlEntities(s.title),
+            id = id,
+            title = decodeHtmlEntities(title),
             artist = decodeHtmlEntities(
-                s.subtitle
+                subtitle.orEmpty()
                     .substringBefore(" - ")
                     .trim()
                     .takeIf { it.isNotEmpty() } ?: "Unknown Artist"
             ),
             album = decodeHtmlEntities(info.album ?: "JioSaavn"),
-            albumArt = JioSaavnCrypto.hiResArt(s.image),
+            albumArt = JioSaavnCrypto.hiResArt(image),
             audioUrl = "", // resolved at play time via [resolveFullStream]
             duration = info.duration?.toIntOrNull() ?: 0,
+            source = MusicSource.JIOSAAVN
+        )
+    }
+
+    private fun jioSongToTrack(s: com.piroman.elara.data.network.JioSong): Track? =
+        trackFromMoreInfo(s.id, s.title, s.subtitle, s.image, s.moreInfo)
+
+    /** A song item from `content.getAlbums` — see [NewReleaseRows.songs]. */
+    private fun featuredItemToTrack(
+        s: com.piroman.elara.data.network.JioFeaturedPlaylist
+    ): Track? = trackFromMoreInfo(s.id, s.title, s.subtitle, s.image, s.moreInfo)
+
+    /**
+     * Maps a song from an album, which is a **flat** payload — see [JioAlbumSong].
+     *
+     * This cannot reuse [jioSongToTrack]: that one starts from `s.moreInfo` and
+     * bails when it is absent, and album songs have no `more_info` object at all,
+     * so every song of every album would have been silently dropped and an album
+     * would have opened to an empty screen with nothing logged.
+     *
+     * The artist is `primary_artists`, a comma-separated list whose first entry is
+     * the lead — the same "take the first" rule [normalizeKey] uses.
+     */
+    private fun albumSongToTrack(s: com.piroman.elara.data.network.JioAlbumSong): Track? {
+        // Guard only: a song with no encrypted media URL has no playable stream.
+        // The nested field is a fallback in case the payload ever nests it the
+        // way the search feed does; the live album payload puts it at the top.
+        if ((s.encryptedMediaUrl ?: s.moreInfo?.encryptedMediaUrl).isNullOrBlank()) return null
+        return Track(
+            id = s.id,
+            title = decodeHtmlEntities(s.title),
+            artist = decodeHtmlEntities(
+                (s.primaryArtists ?: "")
+                    .substringBefore(",")
+                    .trim()
+                    .takeIf { it.isNotEmpty() } ?: "Unknown Artist"
+            ),
+            album = decodeHtmlEntities(s.album ?: "JioSaavn"),
+            albumArt = JioSaavnCrypto.hiResArt(s.image),
+            audioUrl = "", // resolved at play time via [resolveFullStream]
+            duration = s.duration?.toIntOrNull() ?: 0,
             source = MusicSource.JIOSAAVN
         )
     }
@@ -438,13 +725,13 @@ class MusicRepository(
     private fun pickFullVersion(
         response: SCSearchResponse,
         track: Track
-    ): com.aesthetic.spotify.data.network.SCTrack? {
+    ): com.piroman.elara.data.network.SCTrack? {
         val candidates = response.collection.filter { it.policy == "ALLOW" }
         if (candidates.isEmpty()) return null
 
         val expectedMs = track.duration * 1000L
         data class Scored(
-            val t: com.aesthetic.spotify.data.network.SCTrack,
+            val t: com.piroman.elara.data.network.SCTrack,
             val durationCloseness: Long,
             val titleMatch: Boolean
         )
@@ -560,14 +847,14 @@ class MusicRepository(
             ?: emptyList()
     }
 
-    private fun pickLyrics(r: com.aesthetic.spotify.data.network.LrcLibResult, track: Track): List<LyricLine>? {
+    private fun pickLyrics(r: com.piroman.elara.data.network.LrcLibResult, track: Track): List<LyricLine>? {
         return r.syncedLyrics?.let { parseLrc(it) }
             ?: r.plainLyrics?.takeIf { it.isNotBlank() }?.let { parsePlain(it, track.duration) }
     }
 
     fun getExplorePlaylists(): Flow<List<Playlist>> = flow { emit(emptyList()) }
 
-    private fun com.aesthetic.spotify.data.network.ITunesResult.toTrack(audio: String, index: Int) = Track(
+    private fun com.piroman.elara.data.network.ITunesResult.toTrack(audio: String, index: Int) = Track(
         id = trackId.toString(),
         title = trackName,
         artist = artistName,
@@ -578,7 +865,7 @@ class MusicRepository(
         accentColor = ACCENTS[index % ACCENTS.size]
     )
 
-    private fun com.aesthetic.spotify.data.network.ITunesRssEntry.toTrack(audio: String, index: Int) = Track(
+    private fun com.piroman.elara.data.network.ITunesRssEntry.toTrack(audio: String, index: Int) = Track(
         id = audio.substringAfterLast('/').take(24).ifBlank { name?.label ?: "rss$index" },
         title = name?.label ?: "Unknown",
         artist = artist?.label ?: "Unknown Artist",

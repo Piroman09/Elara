@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.playback
+package com.piroman.elara.playback
 
 import kotlin.random.Random
 
@@ -66,6 +66,52 @@ internal object QueueOrder {
         order.map { if (it >= insertAt) it + 1 else it }
 
     /**
+     * Queue index the *previous* transport button should move to, or `null`
+     * when the current track should simply restart from 0.
+     *
+     * Mirrors the shuffle handling of the forward direction. The asymmetry this
+     * exists to prevent: at the **head of the shuffle lap** there is no earlier
+     * entry to walk back to — the permutation records the current lap only, not
+     * a history of laps — so falling back to `cursor - 1` would jump to a
+     * queue-order neighbour that the shuffle never played. Restarting the
+     * current track is the only honest answer, and it matches what a
+     * non-shuffled queue already does at index 0.
+     *
+     * A stale permutation (position outside [shuffleOrder]) is treated the same
+     * way rather than trusted.
+     */
+    fun previousTarget(
+        queueSize: Int,
+        cursor: Int,
+        shuffleOn: Boolean,
+        shuffleOrder: List<Int>,
+        shufflePos: Int
+    ): Int? {
+        if (shuffleOn && shuffleOrder.isNotEmpty()) {
+            if (shufflePos in 1..shuffleOrder.lastIndex) {
+                val candidate = shuffleOrder[shufflePos - 1]
+                if (candidate in 0 until queueSize) return candidate
+            }
+            return null
+        }
+        return if (cursor - 1 >= 0) cursor - 1 else null
+    }
+
+    /**
+     * Where a fresh shuffle lap should start.
+     *
+     * A lap is built by [shuffleOrder], which pins the just-played entry at
+     * position 0 so it is never immediately repeated — so position 1 is where
+     * the lap actually begins. A one-entry lap has no position 1, so it starts
+     * at 0: that single entry *is* the lap.
+     *
+     * Without the size check, repeat-all on a one-track queue computed no
+     * target at all and playback stopped — the one thing repeat-all promises
+     * not to do.
+     */
+    fun nextLapPosition(order: List<Int>): Int = if (order.size > 1) 1 else 0
+
+    /**
      * Where a newly appended track should be slotted into the shuffle
      * permutation. It must land in the *unplayed* tail — at or after the next
      * position — so adding a song mid-shuffle neither jumps the queue nor
@@ -117,4 +163,34 @@ internal object QueueOrder {
         } else {
             emptyList()
         }
+
+    /**
+     * Smart-shuffle permutation. The entry at [cursor] is pinned first; the
+     * remaining indices are bucketed by similarity score, shuffled within each
+     * bucket, then concatenated as high → medium → low.
+     *
+     * @param scores map of queue index to similarity score (higher = more similar).
+     *   Missing entries are treated as 0.
+     * @param highThreshold minimum score for the high-similarity bucket
+     * @param mediumThreshold minimum score for the medium-similarity bucket
+     *   (scores below this land in the low bucket)
+     */
+    fun smartShuffleOrder(
+        size: Int,
+        cursor: Int,
+        scores: Map<Int, Int>,
+        random: Random,
+        highThreshold: Int = 30,
+        mediumThreshold: Int = 15
+    ): List<Int> {
+        require(cursor in 0 until size) { "cursor $cursor out of bounds for size $size" }
+        val tail = (0 until size).filter { it != cursor }
+        val high = tail.filter { (scores[it] ?: 0) >= highThreshold }.shuffled(random)
+        val medium = tail.filter {
+            val s = scores[it] ?: 0
+            s >= mediumThreshold && s < highThreshold
+        }.shuffled(random)
+        val low = tail.filter { (scores[it] ?: 0) < mediumThreshold }.shuffled(random)
+        return listOf(cursor) + high + medium + low
+    }
 }

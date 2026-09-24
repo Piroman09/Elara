@@ -4,15 +4,151 @@ plugins {
 }
 
 android {
-    namespace = 'com.aesthetic.spotify'
+    namespace = 'com.piroman.elara'
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.aesthetic.spotify"
+        applicationId = "com.piroman.elara"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // Bumped on every handover. This app is sideloaded from a file, not a
+        // store, and both of these were static through several rounds of fixes —
+        // so "the fix still isn't there" could not be told apart from "the old
+        // APK is still installed". Player Settings now prints both values, and
+        // the footer's *presence* is itself the signal: any build from before
+        // 2026-09-18 has no version footer at all.
+        //
+        // 1.3 (build 4) — 2026-09-21. Persistence durability round. The source
+        // changed after build 3 was produced (AtomicFileWrite gained a lock, and
+        // DownloadManager's four index writes became atomic `update { }`), so
+        // build 3's number would have pointed at two different APKs.
+        //
+        // 1.4 (build 5) — 2026-09-21. Download index repair: loadIndex() now drops
+        // entries whose `track` came back null from Gson's `Unsafe` path, instead of
+        // letting that null reach the ten `it.track.id` call sites.
+        //
+        // 1.5 (build 6) — 2026-09-21. THE ACTUAL DATA-LOSS FIX. Every persisted store
+        // used `object : TypeToken<List<T>>() {}`, whose element type comes from an
+        // anonymous subclass's generic superclass signature. R8 merged those subclasses
+        // and the signature was lost, so all four stores threw "TypeToken must be created
+        // with a type argument" on every launch, read as EMPTY, and the next save
+        // overwrote the user's real data — release builds only. Now built from Class
+        // literals via listTypeOf(), with a source ban in verifyReleaseDex.
+        //
+        // 1.6 (build 7) — 2026-09-21. Home redesign. Every shelf on Home is now
+        // the same 136 dp tile with centred labels underneath (the featured
+        // playlists stopped being a bordered 150×190 card with the text inside),
+        // and section headings across Home and Library moved to one shared
+        // component in the light-violet accent. No persistence, playback or
+        // data-model code was touched, so nothing here can affect the data-loss
+        // fix above — the number is bumped only so a report of "Home looks the
+        // same" can be told apart from "the old APK is still installed".
+        //
+        // 1.7 (build 8) — 2026-09-21. Four new Home rows: Browse categories,
+        // Top charts, New releases and Throwback. Charts and new releases come
+        // from two JioSaavn endpoints that were not wired up before
+        // (`content.getCharts`, `content.getAlbums`), and albums needed a
+        // separate song mapper because `webapi.get?type=album` returns a flat
+        // payload with no `more_info` — feeding it through the existing mapper
+        // would have opened every album empty. Browse categories has no feed on
+        // this host and is search-backed; see `HomeCategories`. The tile model
+        // was renamed `FeaturedPlaylist` -> `BrowseTile` now that it also holds
+        // albums, which are not playlists. No persistence, playback or data-model
+        // code changed, so nothing here touches the 1.5 data-loss fix.
+        //
+        // 1.8 (build 9) — 2026-09-21. Fixes the full-screen player's like button,
+        // which stored the like correctly but never repainted its icon: the heart
+        // read `viewModel.isLiked(track)`, and that helper reads `_likedTracks.value`
+        // once without subscribing the composable to the flow, so the icon kept
+        // showing its first answer. The player now collects `likedTracks`, so the
+        // icon follows the tap. One UI read replaced; no persistence, playback or
+        // data-model change, so the 1.5 data-loss fix is untouched. Also renames a
+        // shadowed `track` in the up-next row to `queueTrack` — it shadowed the
+        // currently-playing `track`, so the same name meant two things a few lines
+        // apart. That was the only Kotlin warning in the tree; incremental builds had
+        // been hiding it, since unchanged files are not recompiled and so do not
+        // re-emit their warnings.
+        //
+        // 1.9 (build 10) — 2026-09-21. Two more Home rows, both from real feeds.
+        // "New songs" is the other half of the `content.getAlbums` response that
+        // the album filter was discarding — 17 playable songs per call, already
+        // paid for. That needed `more_info` to survive parsing on
+        // `JioFeaturedPlaylist`, and the third `more_info`-shaped song mapper
+        // triggered an extraction into `trackFromMoreInfo`, so the artist parsing
+        // and artwork upgrade cannot drift between the three call sites.
+        // "Trending searches" is `content.getTopSearches` — a fixed 10 titles —
+        // rendered as chips that search, because the feed mixes albums, songs and
+        // artists and has no single open action. `CategoryShelf` became `ChipShelf`
+        // so both chip rows share one implementation. Re-probed 12 further
+        // endpoints: all unsupported, and `page` is accepted but ignored on the
+        // feeds that exist, so there is no more depth to mine here.
+        //
+        // 1.10 (build 11) — 2026-09-21. Two YouTube Music rows on Home, and the
+        // Music Source setting now governs them: they appear under Auto and
+        // YouTube Music, and are cleared under JioSaavn-only so a row labelled
+        // "YouTube Music" can never contradict the setting.
+        //
+        // They are search-backed, not feed-backed, and that was measured rather
+        // than assumed. Probed live against WEB_REMIX with this app's own client
+        // identity: `FEmusic_charts` returns video charts, language tiles and a
+        // "Top artists" carousel whose 40 rows are artists with no `videoId`, so
+        // nothing on that page is playable; its chart playlists do yield 20 real
+        // tracks ("Trending 20 India" resolves `playabilityStatus: OK`) but the
+        // titles are upload packaging — "Full Video: Yaalalo Yaalalo | Irumudi |
+        // Ravi Teja | …" — which is fine in a search list and unacceptable as a
+        // Home card; `FEmusic_new_releases` returns albums this app has no flow
+        // to open; and `FEmusic_moods_and_genres` answers 200 with no content.
+        //
+        // What does work is the Songs-tab search filter (`FILTER_SONGS`), which
+        // turns a mixed result set into 30 clean `Artist • Album • Duration`
+        // rows that all carry a `videoId`. `search()` gained `songsOnly`, and the
+        // body moved into an `internal searchBody()` so the filter is unit-tested
+        // — dropping `params` does not error, it silently changes the shape of
+        // the results.
+        //
+        // 1.11 (build 12) — 2026-09-22. Home's rows now refresh when the user
+        // returns to the app. They were fetched exactly once, when the ViewModel
+        // was created, and the ViewModel is Activity-scoped — so an app left open
+        // in the background for days kept showing the rows from its last cold
+        // start, and with no pull-to-refresh the user had no way to ask for newer
+        // ones. Nothing was cached (TrendingCache is dead code), so there was no
+        // stale file to fix; the missing piece was the trigger, and it is now
+        // `MainActivity.onResume` → `MainViewModel.refreshHomeIfStale()`.
+        //
+        // The four Home loaders became `suspend` and are driven by one
+        // `loadHomeRows()` batch, still concurrent. That was not cosmetic: without
+        // a batch there is no way to answer "is the last fetch still running?",
+        // and the resume that follows a cold start would have doubled every
+        // request. The decision itself is a pure function (`HomeRefreshPolicy`,
+        // tested) because both failure modes are silent — too eager re-fetches
+        // eight rows on every app switch, too shy leaves Home a day stale.
+        //
+        // 1.12 (build 13) — 2026-09-22. Three real defects in the YouTube rows,
+        // found by rendering both queries through the app's own parser and
+        // looking at the output rather than at the counts:
+        //
+        //  1. The row labelled "new songs" contained 2018–2022 releases ("Dilbar
+        //     (From Satyameva Jayate)", "O Saki Saki (From Batla House)", "Tum Hi
+        //     Aana (From Marjaavaan)"). YouTube's song search ranks by popularity,
+        //     not date, and this client has no new-songs feed — so the label
+        //     lied. The query is now `Hip-Hop`, taken from the app's own
+        //     `HomeCategories`, which keeps the row both honest and distinct
+        //     (20 rows, zero overlap with the first row).
+        //  2. The two rows shared 5 songs of 25. The second row now drops
+        //     anything the first already shows.
+        //  3. Entries were not always songs: "Bollywood Dj Non Stop Remix" at
+        //     50:23 and "Party Mashup - DJ Praveen" at 30:17 were rendered as
+        //     cards, and tapping one starts a 50-minute DJ set. A 15-minute cap
+        //     removes them. Unknown durations are *kept* on purpose, so a change
+        //     in YouTube's response shape degrades to "no duration known" rather
+        //     than silently emptying the row.
+        //
+        // `YouTubeMusicRows.trending`/`.newSongs` became `.top`/`.genre`, and the
+        // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
+        // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
+        // is how the wrong branch gets taken later.
+        versionCode = 13
+        versionName = "1.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true

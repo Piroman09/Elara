@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.ui.components
+package com.piroman.elara.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -18,8 +18,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.aesthetic.spotify.ui.theme.AuraViolet
-import com.aesthetic.spotify.ui.theme.AuraPurple
+import com.piroman.elara.ui.theme.AuraViolet
+import com.piroman.elara.ui.theme.AuraPurple
 
 /**
  * Placeholder shown wherever a track has no usable cover — YouTube Music rows

@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.playback
+package com.piroman.elara.playback
 
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player

@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.data.network
+package com.piroman.elara.data.network
 
 import com.google.gson.annotations.SerializedName
 import retrofit2.http.GET

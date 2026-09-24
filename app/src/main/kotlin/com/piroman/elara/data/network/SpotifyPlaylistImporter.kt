@@ -1,8 +1,8 @@
-package com.aesthetic.spotify.data.network
+package com.piroman.elara.data.network
 
 import android.util.Log
-import com.aesthetic.spotify.data.model.MusicSource
-import com.aesthetic.spotify.data.model.Track
+import com.piroman.elara.data.model.MusicSource
+import com.piroman.elara.data.model.Track
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers

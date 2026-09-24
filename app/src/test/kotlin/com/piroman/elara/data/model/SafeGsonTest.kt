@@ -1,6 +1,5 @@
-package com.aesthetic.spotify.data.model
+package com.piroman.elara.data.model
 
-import com.google.gson.reflect.TypeToken
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,7 +16,7 @@ class SafeGsonTest {
     @Test
     fun `a list of tracks comes back with no nulls`() {
         val json = """[{"id":"a","duration":1},{"id":"b","duration":2}]"""
-        val type = object : TypeToken<List<Track>>() {}.type
+        val type = listTypeOf(Track::class.java)
 
         val tracks: List<Track> = gson.fromJson(json, type)
 

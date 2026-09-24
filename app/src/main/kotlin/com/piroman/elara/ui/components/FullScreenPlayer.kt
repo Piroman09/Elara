@@ -1,18 +1,22 @@
-package com.aesthetic.spotify.ui.components
+package com.piroman.elara.ui.components
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lyrics
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Pause
@@ -20,6 +24,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,13 +50,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.theme.AuraBg
-import com.aesthetic.spotify.ui.theme.AuraError
-import com.aesthetic.spotify.ui.theme.AuraPurple
-import com.aesthetic.spotify.ui.theme.AuraViolet
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
-import com.aesthetic.spotify.ui.theme.Motion
+import com.piroman.elara.ui.LazyKeys
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.theme.AuraBg
+import com.piroman.elara.ui.theme.AuraCardStrong
+import com.piroman.elara.ui.theme.AuraError
+import com.piroman.elara.ui.theme.AuraPurple
+import com.piroman.elara.ui.theme.AuraViolet
+import com.piroman.elara.ui.theme.AuraTextPrimary
+import com.piroman.elara.ui.theme.AuraTextSecondary
+import com.piroman.elara.ui.theme.Motion
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -60,6 +69,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -67,7 +77,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextOverflow
 
 @Composable
-fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
+fun FullScreenPlayer(
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit,
+    onSettings: () -> Unit = {}
+) {
     val track by viewModel.currentTrack.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val lyrics by viewModel.currentLyrics.collectAsState()
@@ -81,6 +95,37 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
     val positionState = viewModel.positionMs.collectAsState()
     val durationMs by viewModel.durationMs.collectAsState()
     val isQueueOpen by viewModel.isQueueOpen.collectAsState()
+    val queue by viewModel.queue.collectAsState()
+    val queueIndex by viewModel.queueIndex.collectAsState()
+
+    // Collected rather than read via `viewModel.isLiked(track)`: that helper reads
+    // `_likedTracks.value` once and does **not** subscribe this composable to the
+    // flow, so tapping the heart changed the stored list but never repainted the
+    // icon — it looked like the button did nothing. `likedTracks` is not per-frame
+    // state (it changes only when the user taps), so collecting it here is cheap.
+    val likedTracks by viewModel.likedTracks.collectAsState()
+
+    // Upcoming tracks for the preview row.
+    val upcoming = remember(queue, queueIndex) {
+        if (queueIndex < 0 || queueIndex >= queue.lastIndex) emptyList()
+        else queue.subList(queueIndex + 1, (queueIndex + 4).coerceAtMost(queue.size))
+    }
+
+    // Lazy keys for the preview row: identity **plus an occurrence suffix**,
+    // never the bare id — the same rule as QueueDrawer, and for the same reason.
+    //
+    // This slice is taken straight out of the queue, and the queue deliberately
+    // allows the same song to appear more than once: `playNextInQueue` inserts at
+    // `queueIndex + 1` with no de-duplication, so tapping "Play next" on a song
+    // that is already one of the next few tracks puts two entries with the same
+    // id inside this three-item window. Duplicate keys crash a lazy list outright.
+    val upcomingKeyed = remember(upcoming) { LazyKeys.withOccurrence(upcoming) { it.id } }
+
+    // Same rule as `positionState` above, for the same reason: the sleep timer
+    // ticks once a second while it runs, so it is handed to a leaf as a State
+    // rather than unwrapped with `by` here. Unwrapping would re-compose the whole
+    // player — artwork, lyrics, controls, queue drawer — every second.
+    val sleepTimerState = viewModel.sleepTimerRemainingMs.collectAsState()
 
     var showLyrics by remember { mutableStateOf(false) }
     var showAddToPlaylist by remember { mutableStateOf(false) }
@@ -160,10 +205,21 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                     textAlign = TextAlign.Center,
                     modifier = Modifier.weight(1f)
                 )
+                SleepTimerButton(
+                    remaining = sleepTimerState,
+                    onSelect = { viewModel.setSleepTimer(it) }
+                )
                 IconButton(onClick = { viewModel.setQueueOpen(true) }) {
                     Icon(
                         imageVector = Icons.Default.QueueMusic,
                         contentDescription = "Queue",
+                        tint = Color.White
+                    )
+                }
+                IconButton(onClick = onSettings) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Player settings",
                         tint = Color.White
                     )
                 }
@@ -261,6 +317,34 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                 )
             }
 
+            // Up Next preview
+            if (upcoming.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Up next",
+                    color = AuraTextSecondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(upcomingKeyed, key = { it.second }) { item ->
+                        // `queueTrack`, not `track`: the outer `track` is the song
+                        // playing right now, and shadowing it made the same name mean
+                        // two different things a few lines apart.
+                        val queueTrack = item.first
+                        UpNextChip(
+                            track = queueTrack,
+                            onClick = { viewModel.playTrack(queueTrack, queue) }
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
 
             Row(
@@ -268,7 +352,7 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val liked = viewModel.isLiked(track!!)
+                val liked = likedTracks.any { it.id == track!!.id }
                 IconButton(onClick = { viewModel.toggleLikeTrack(track!!) }) {
                     Icon(
                         imageVector = if (liked) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -333,13 +417,81 @@ fun FullScreenPlayer(viewModel: MainViewModel, onDismiss: () -> Unit) {
     }
 }
 
+/** Minute choices offered by the sleep timer. `null` is the "off" entry. */
+private val SleepTimerOptions = listOf<Int?>(null, 5, 15, 30, 45, 60)
+
+/**
+ * Sleep-timer control. Owns the only read of [remaining], so the once-a-second
+ * countdown re-composes this button and nothing else.
+ *
+ * [onSelect] receives minutes, or null to cancel.
+ */
+@Composable
+private fun SleepTimerButton(
+    remaining: State<Long?>,
+    onSelect: (Int?) -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val ms = remaining.value
+    val active = ms != null
+
+    Box {
+        IconButton(onClick = { menuOpen = true }) {
+            Icon(
+                imageVector = Icons.Default.Bedtime,
+                contentDescription = if (active) {
+                    "Sleep timer, ${formatTime(ms!!)} remaining"
+                } else {
+                    "Sleep timer"
+                },
+                tint = if (active) AuraViolet else Color.White
+            )
+        }
+
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            SleepTimerOptions.forEach { minutes ->
+                // The active duration is shown by tint rather than a checkmark,
+                // so "Off" still reads correctly when nothing is running.
+                val isCurrent = if (minutes == null) {
+                    !active
+                } else {
+                    active && ms!! > (minutes - 1) * 60_000L
+                }
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = minutes?.let { "$it minutes" } ?: "Off",
+                            color = if (isCurrent) AuraViolet else AuraTextPrimary
+                        )
+                    },
+                    onClick = {
+                        onSelect(minutes)
+                        menuOpen = false
+                    }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun LyricsPane(
-    lyrics: List<com.aesthetic.spotify.data.model.LyricLine>,
+    lyrics: List<com.piroman.elara.data.model.LyricLine>,
     activeLineState: State<Int>,
     isLoading: Boolean
 ) {
     val listState = rememberLazyListState()
+
+    // Lazy keys: identity **plus an occurrence suffix**, never the bare id.
+    //
+    // The id here is the line's timestamp (see the LRC parsers), and two lines
+    // can share one: bilingual LRC files carry the original and the translation
+    // under the same `[mm:ss.xx]` marker, and repeated markers appear in
+    // hand-edited files. A duplicate key crashes the list.
+    //
+    // Safe to re-key because `line.id` is used for nothing else — the active
+    // line is tracked by *index* (`activeLineState`), not looked up by id.
+    val lyricsKeyed = remember(lyrics) { LazyKeys.withOccurrence(lyrics) { it.id } }
 
     // Keep the active line in view. Reads the State rather than a plain Int, so
     // the playback tick arrives here as a snapshot-flow emission instead of a
@@ -388,10 +540,11 @@ private fun LyricsPane(
             modifier = Modifier.fillMaxWidth().aspectRatio(1f)
         ) {
             itemsIndexed(
-                items = lyrics,
-                key = { _, line -> line.id },
+                items = lyricsKeyed,
+                key = { _, item -> item.second },
                 contentType = { _, _ -> "lyric" }
-            ) { index, line ->
+            ) { index, item ->
+                val line = item.first
                 // A plain swap instead of animateColorAsState + animateFloatAsState
                 // + Modifier.scale(). The scale was the expensive part: it wraps a
                 // full-width 22 sp Text in its own graphics layer, and two rows
@@ -596,5 +749,49 @@ fun PixelSquigglySlider(
                 .fillMaxWidth()
                 .alpha(0f)
         )
+    }
+}
+
+/**
+ * Small horizontal chip showing the next track in the queue.
+ *
+ * Kept tiny so several fit in the row without pushing the controls off-screen.
+ */
+@Composable
+private fun UpNextChip(track: com.piroman.elara.data.model.Track, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(AuraCardStrong)
+            .clickable(onClick = onClick)
+            .padding(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TrackArtwork(
+            url = track.albumArt,
+            size = 32.dp,
+            cornerRadius = 4.dp
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Column {
+            Text(
+                text = track.title,
+                color = AuraTextPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 120.dp)
+            )
+            Text(
+                text = track.artist,
+                color = AuraTextSecondary,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 120.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(6.dp))
     }
 }

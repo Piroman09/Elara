@@ -1,6 +1,6 @@
-package com.aesthetic.spotify.data.network
+package com.piroman.elara.data.network
 
-import com.aesthetic.spotify.data.model.SafeGson
+import com.piroman.elara.data.model.SafeGson
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory

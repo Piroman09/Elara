@@ -1,4 +1,4 @@
-package com.aesthetic.spotify.data.model
+package com.piroman.elara.data.model
 
 /**
  * Which backend a [Track] came from / should play through.

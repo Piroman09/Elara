@@ -1,14 +1,14 @@
-package com.aesthetic.spotify.perf
+package com.piroman.elara.perf
 
-import com.aesthetic.spotify.data.model.SafeGson
-import com.aesthetic.spotify.data.model.Track
-import com.aesthetic.spotify.data.network.JioSaavnApi
-import com.aesthetic.spotify.data.network.LyricsApi
-import com.aesthetic.spotify.data.network.MusicApi
-import com.aesthetic.spotify.data.network.SoundCloudApi
-import com.aesthetic.spotify.data.playlist.Playlist
+import com.piroman.elara.data.model.SafeGson
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.data.network.JioSaavnApi
+import com.piroman.elara.data.network.LyricsApi
+import com.piroman.elara.data.network.MusicApi
+import com.piroman.elara.data.network.SoundCloudApi
+import com.piroman.elara.data.playlist.Playlist
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
+import com.piroman.elara.data.model.listTypeOf
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -118,8 +118,8 @@ class StartupCostBenchmarkTest {
 
     @Test
     fun `report parse cost against library size`() {
-        val playlistType = object : TypeToken<List<Playlist>>() {}.type
-        val trackType = object : TypeToken<List<Track>>() {}.type
+        val playlistType = listTypeOf(Playlist::class.java)
+        val trackType = listTypeOf(Track::class.java)
 
         println()
         println("Gson parse cost — LOWER BOUND for ART (no disk I/O, warm JVM)")

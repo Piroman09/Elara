@@ -1,10 +1,10 @@
-package com.aesthetic.spotify.data.diagnostics
+package com.piroman.elara.data.diagnostics
 
 import android.content.Context
 
 /**
  * Cold-start timing for the work that runs on the **main thread** while
- * [com.aesthetic.spotify.ui.MainViewModel] is being constructed.
+ * [com.piroman.elara.ui.MainViewModel] is being constructed.
  *
  * Why this exists: the ViewModel's field initializers construct five process
  * singletons, and each of those does its own disk read (or player construction)

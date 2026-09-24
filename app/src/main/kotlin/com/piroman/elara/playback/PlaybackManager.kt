@@ -1,9 +1,11 @@
-package com.aesthetic.spotify.playback
+package com.piroman.elara.playback
 
 import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -13,13 +15,16 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import com.aesthetic.spotify.data.diagnostics.PlaybackDiagnostics
-import com.aesthetic.spotify.data.diagnostics.StartupTiming
-import com.aesthetic.spotify.data.model.SafeGson
-import com.aesthetic.spotify.data.model.Track
-import com.google.gson.reflect.TypeToken
+import com.piroman.elara.data.diagnostics.PlaybackDiagnostics
+import com.piroman.elara.data.diagnostics.StartupTiming
+import com.piroman.elara.data.history.PlayHistoryManager
+import com.piroman.elara.data.model.SafeGson
+import com.piroman.elara.data.stats.ListeningStatsManager
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.data.model.listTypeOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -51,6 +56,47 @@ class PlaybackManager private constructor(context: Context) {
         private const val KEY_SHUFFLE = "queue_shuffle"
         private const val KEY_REPEAT = "queue_repeat"
 
+        /**
+         * Playback offset saved alongside the queue so reopening the app resumes
+         * the song where it was left rather than from the top.
+         */
+        private const val KEY_POSITION = "queue_position"
+
+        /**
+         * How often the playing offset is written to disk. Every tick (400 ms)
+         * would mean ~2.5 `SharedPreferences` commits per second for a value
+         * that only matters on the next cold start.
+         */
+        private const val POSITION_PERSIST_INTERVAL_MS = 5_000L
+
+        /**
+         * Resuming this close to the end is worse than not resuming: the track
+         * would end a second or two after the app opens. Anything inside this
+         * window of the outro restarts from 0 instead.
+         */
+        private const val RESUME_TAIL_GRACE_MS = 10_000L
+
+        /**
+         * Sleep-timer countdown granularity. One second is what the label needs;
+         * coarser and the displayed minutes would visibly skip.
+         */
+        private const val SLEEP_TICK_MS = 1_000L
+
+        /**
+         * How long the volume takes to reach zero before pausing when the sleep
+         * timer expires. A hard cut at bedtime is jarring; 10 seconds is enough
+         * to notice the fade without dragging it out.
+         */
+        private const val FADE_OUT_MS = 10_000L
+
+        /**
+         * Ramp granularity for the crossfade fade-out. The position ticker runs
+         * every 400 ms, which is far too coarse for the short end of the slider
+         * (2 s = five audible steps). The ramp gets its own 50 ms job; the ticker
+         * only decides whether we are inside the fade window.
+         */
+        private const val CROSSFADE_STEP_MS = 50L
+
         @Volatile private var instance: PlaybackManager? = null
 
         fun getInstance(context: Context): PlaybackManager =
@@ -65,12 +111,31 @@ class PlaybackManager private constructor(context: Context) {
 
     private val prefs = appContext.getSharedPreferences("aurasonic_prefs", Context.MODE_PRIVATE)
     private val gson = SafeGson.instance
+    private val statsManager = ListeningStatsManager.getInstance(appContext)
+
+    /**
+     * "Recently played" / "Most played" history.
+     *
+     * Held here, not in the UI, because the only place that sees *every* way a
+     * track can start is [playAt]. See the note there.
+     */
+    private val playHistory = PlayHistoryManager.getInstance(appContext)
 
     private val httpDataSourceFactory = DefaultHttpDataSource.Factory()
         .setAllowCrossProtocolRedirects(true)
         .setUserAgent("Mozilla/5.0")
         .setConnectTimeoutMs(15000)
         .setReadTimeoutMs(15000)
+
+    /**
+     * Music attributes with `handleAudioFocus = true`, which is what makes the
+     * player duck/pause for calls, alarms and other apps. Declaring the usage
+     * also keeps us out of the "media" bucket on Android 12+ for free.
+     */
+    private val audioAttributes = AudioAttributes.Builder()
+        .setUsage(C.USAGE_MEDIA)
+        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+        .build()
 
     val exoPlayer: ExoPlayer = StartupTiming.measure("ExoPlayer.build") {
         ExoPlayer.Builder(context)
@@ -83,6 +148,10 @@ class PlaybackManager private constructor(context: Context) {
                     DefaultDataSource.Factory(context, httpDataSourceFactory)
                 )
             )
+            .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
+            // Pause when headphones are unplugged / Bluetooth disconnects.
+            // Without this the phone keeps blasting music out of the speaker.
+            .setHandleAudioBecomingNoisy(true)
             .build()
     }
 
@@ -97,6 +166,64 @@ class PlaybackManager private constructor(context: Context) {
 
     private val _durationMs = MutableStateFlow(0L)
     val durationMs: StateFlow<Long> = _durationMs
+
+    /**
+     * Milliseconds left on the sleep timer, or null when it is off.
+     *
+     * Owned here rather than by the ViewModel on purpose: a ViewModel dies with
+     * the UI, so a timer kept there would stop counting the moment the app is
+     * backgrounded — which is precisely when a sleep timer is wanted. This
+     * instance is process-wide and the playback service keeps it alive.
+     */
+    private val _sleepTimerRemainingMs = MutableStateFlow<Long?>(null)
+    val sleepTimerRemainingMs: StateFlow<Long?> = _sleepTimerRemainingMs
+
+    private var sleepTimerJob: Job? = null
+
+    /** The fine-grained outro fade, when one is in flight. */
+    private var crossfadeJob: Job? = null
+
+    /**
+     * How many milliseconds before the end of a track the volume should start
+     * fading to zero. 0 = no fade (full volume until the cut).
+     *
+     * This is a **fade-out**, not a true crossfade: only the outgoing track is
+     * attenuated and the next one starts at full volume. An overlapping blend
+     * needs two players producing audio at once, but [exoPlayer] holds a single
+     * MediaItem and `PlaybackService` binds one MediaSession to one Player — so
+     * it would mean a dual-player rewrite of this class plus a session
+     * hand-off. The UI copy says "fade out" to match what actually happens.
+     */
+    var crossfadeMs = 0L
+
+    /**
+     * Volume is owned here so that independent fades *compose* instead of
+     * clobbering each other. Both the crossfade fade-out and the sleep-timer
+     * fade-out used to write `exoPlayer.volume` directly, so the 400 ms position
+     * ticker would reset the sleep fade to full volume whenever crossfade was on.
+     */
+    @Volatile private var crossfadeFactor = 1f
+    @Volatile private var sleepFadeFactor = 1f
+
+    /**
+     * The single writer for the player's volume. The combination rule lives in
+     * [VolumeMix] so it can be unit-tested without a device.
+     */
+    private fun applyVolume() {
+        val target = VolumeMix.mix(crossfadeFactor, sleepFadeFactor)
+        if (exoPlayer.volume != target) exoPlayer.volume = target
+    }
+
+    /** When true, shuffle orders tracks by similarity to the current song. */
+    var smartShuffle = false
+
+    /**
+     * Scores tracks for smart shuffle. Given the current track and the full
+     * queue, returns a map of queue index to similarity score (0–100+).
+     * Higher = more similar. A null provider disables smart shuffle even when
+     * [smartShuffle] is true.
+     */
+    var smartShuffleScorer: ((Track, List<Track>) -> Map<Int, Int>)? = null
 
     private val _queue = MutableStateFlow<List<Track>>(emptyList())
     val queue: StateFlow<List<Track>> = _queue
@@ -145,8 +272,30 @@ class PlaybackManager private constructor(context: Context) {
      */
     var localSourceResolver: ((Track) -> String?)? = null
 
+    /**
+     * Supplies tracks to keep playing when the queue runs off its end with
+     * repeat off. Given the last track, returns candidates to append — the
+     * caller decides what "similar" means, and returning an empty list stops
+     * playback as before.
+     */
+    var autoplayProvider: (suspend (Track) -> List<Track>)? = null
+
     private val resolvedUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var playGeneration = 0
+
+    /** In-flight autoplay fetch, so a second queue-end can't stack another one. */
+    private var autoplayJob: Job? = null
+
+    /**
+     * Offset to resume at the next time playback starts, restored from
+     * [KEY_POSITION] at construction. Held separately from [_positionMs] so a
+     * cold start can show the resume point in the UI *before* the player has
+     * anything loaded; cleared once consumed by [togglePlay].
+     */
+    private var restoredPositionMs = 0L
+
+    /** Last offset written to disk, so the ticker only persists real movement. */
+    private var lastPersistedPositionMs = -1L
 
     /** Notifies the app when a downloaded file turned out to be missing/corrupt. */
     var onDownloadMissing: ((Track) -> Unit)? = null
@@ -212,16 +361,113 @@ class PlaybackManager private constructor(context: Context) {
         StartupTiming.measure("PlaybackManager.restoreQueue") { restoreQueue() }
 
         // Position ticker for the UI slider/lyrics sync.
+        var lastTickPos = 0L
         scope.launch {
             while (isActive) {
                 if (exoPlayer.isPlaying) {
-                    _positionMs.value = exoPlayer.currentPosition.coerceAtLeast(0)
+                    val pos = exoPlayer.currentPosition.coerceAtLeast(0)
+                    val delta = pos - lastTickPos
+                    // Only count real forward progress (ignore seeks and resets).
+                    if (delta in 1..10_000) {
+                        statsManager.addTime(delta)
+                    }
+                    lastTickPos = pos
+                    _positionMs.value = pos
+                    // Throttled: this is the only place playback progress reaches
+                    // disk, so a crash or a kill still resumes within 5 seconds
+                    // of where it stopped.
+                    if (kotlin.math.abs(pos - lastPersistedPositionMs) >=
+                        POSITION_PERSIST_INTERVAL_MS
+                    ) {
+                        persistPosition(pos)
+                    }
                     val d = exoPlayer.duration
-                    if (d > 0) _durationMs.value = d
+                    if (d > 0) {
+                        _durationMs.value = d
+                        // Fade the outro down as it approaches. This ticker only
+                        // decides *whether* we are inside the fade window; the ramp
+                        // itself runs on its own finer-grained job, because 400 ms
+                        // steps are audible at the short end of the slider.
+                        updateCrossfadeFade(pos, d)
+                    }
+                } else {
+                    // Playback stopped (pause, sleep timer, end of queue). Flush
+                    // the listening total that addTime batched — this one hook
+                    // covers every pause path, and flush() is a no-op once there
+                    // is nothing pending, so it does not write on every tick.
+                    statsManager.flush()
                 }
                 delay(400)
             }
         }
+    }
+
+    /**
+     * Start or stop the outro fade for the current playback position.
+     *
+     * Called from the 400 ms position ticker, which is the only thing that knows
+     * where we are — but is far too coarse to *drive* the ramp.
+     */
+    private fun updateCrossfadeFade(positionMs: Long, durationMs: Long) {
+        val remaining = durationMs - positionMs
+        if (crossfadeMs > 0L && remaining in 1..crossfadeMs) {
+            if (crossfadeJob?.isActive != true) startCrossfadeFade(remaining)
+        } else {
+            // Either crossfade is off, or we are outside the window (including
+            // after a seek backwards) — restore full volume.
+            endCrossfadeFade()
+        }
+    }
+
+    private fun startCrossfadeFade(remainingMs: Long) {
+        crossfadeJob = scope.launch {
+            var left = remainingMs
+            while (left > 0 && isActive) {
+                crossfadeFactor = (left / crossfadeMs.toFloat()).coerceIn(0f, 1f)
+                applyVolume()
+                delay(CROSSFADE_STEP_MS)
+                left -= CROSSFADE_STEP_MS
+            }
+            if (isActive) {
+                crossfadeFactor = 0f
+                applyVolume()
+            }
+        }
+    }
+
+    /**
+     * Cancel any in-flight fade and restore full volume. Safe to call when no
+     * fade is running, so callers do not have to track that themselves.
+     */
+    private fun endCrossfadeFade() {
+        crossfadeJob?.cancel()
+        crossfadeJob = null
+        if (crossfadeFactor != 1f) {
+            crossfadeFactor = 1f
+            applyVolume()
+        }
+    }
+
+    /**
+     * Restart the current track from the top, at full volume.
+     *
+     * Three paths need this: repeat-one when a track ends, and both of
+     * `playPrevious`'s "restart the song" branches. All three used to inline
+     * `seekTo(0)` and leave the outro fade alone — so with Fade Out on, the track
+     * had already ramped to `crossfadeFactor = 0f`, the restart began **silent**,
+     * and it stayed silent until the next 400 ms ticker tick happened to notice
+     * the position was back outside the fade window. On repeat-one that is an
+     * audible clipped start on every single loop, for a gap whose length depends
+     * on where the ticker happened to be.
+     *
+     * `playAt` already resets the fade for every other transition; this keeps the
+     * bare restarts in step with it. Extracted rather than repeated because the
+     * reset is exactly the step three copies of `seekTo(0)` had all missed.
+     */
+    private fun restartCurrentTrack() {
+        endCrossfadeFade()
+        exoPlayer.seekTo(0)
+        _positionMs.value = 0
     }
 
     // ── Queue construction ────────────────────────────────────────────────
@@ -260,14 +506,43 @@ class PlaybackManager private constructor(context: Context) {
         playAt(index)
     }
 
-    fun playAt(index: Int) {
+    /**
+     * Start the queue entry at [index], optionally from [startPositionMs].
+     *
+     * The offset is only ever non-zero on the resume-after-cold-start path; the
+     * seek is issued before `prepare()` completes, which ExoPlayer honours as
+     * the initial position.
+     *
+     * **This is the single owner of "recently played" history.** Every way a
+     * track can start funnels through here — tapping a track ([setQueue]),
+     * Next/Previous, the queue drawer ([jumpTo]), autoplay, the
+     * notification/lock-screen controls (they drive [playNext]/[playPrevious]),
+     * and pressing play on the queue restored from disk ([togglePlay]). That is
+     * why the recording lives here rather than in `MainViewModel.playTrack`,
+     * which is where it used to be: recording only on a UI tap meant a session
+     * spent skipping, autoplaying, or resuming a restored queue wrote **no
+     * history at all**, so "Recently played" was empty the next time the app
+     * opened. [recordHistory] is false only for [retryCurrentWithoutLocal],
+     * where the same track is being re-attached rather than played again.
+     */
+    fun playAt(index: Int, startPositionMs: Long = 0L, recordHistory: Boolean = true) {
         val tracks = _queue.value
         if (index !in tracks.indices) return
         _queueIndex.value = index
         val track = tracks[index]
         _currentTrack.value = track
-        _positionMs.value = 0
+        statsManager.recordTrack(track.id)
+        if (recordHistory) playHistory.record(track)
+        val start = startPositionMs.coerceAtLeast(0L)
+        _positionMs.value = start
         persistQueue()
+        // Reset immediately: otherwise quitting within the 5 s persist window
+        // would leave the *previous* track's offset on disk, which the next cold
+        // start would then apply to a different song.
+        persistPosition(start)
+        // A new track means a fresh start: clear any in-flight outro fade, or the
+        // next song would inherit a ducked volume from the previous one's fade.
+        endCrossfadeFade()
 
         val generation = ++playGeneration
         scope.launch {
@@ -320,6 +595,9 @@ class PlaybackManager private constructor(context: Context) {
 
             exoPlayer.setMediaItem(mediaItem)
             exoPlayer.prepare()
+            // Seek before play(): ExoPlayer keeps the position across prepare,
+            // so the track starts at the resume point rather than the intro.
+            if (start > 0) exoPlayer.seekTo(start)
             exoPlayer.play()
         }
     }
@@ -327,8 +605,7 @@ class PlaybackManager private constructor(context: Context) {
     private fun onTrackFinished() {
         when (_repeatMode.value) {
             RepeatMode.ONE -> {
-                exoPlayer.seekTo(0)
-                _positionMs.value = 0
+                restartCurrentTrack()
                 exoPlayer.play()
             }
             else -> playNext()
@@ -346,12 +623,14 @@ class PlaybackManager private constructor(context: Context) {
                 target = shuffleOrder[shufflePos + 1]
             } else if (_repeatMode.value == RepeatMode.ALL) {
                 // New lap: reshuffle but never repeat the track we just heard.
+                // The lap starts at QueueOrder.nextLapPosition — position 1, or
+                // position 0 when the queue holds a single track (there is no
+                // position 1 to start from, and repeat-all must still loop).
                 val order = QueueOrder.shuffleOrder(tracks.size, idx, Random)
-                if (order.size > 1) {
-                    shuffleOrder = order
-                    shufflePos = 1
-                    target = order[1]
-                }
+                shuffleOrder = order
+                val lap = QueueOrder.nextLapPosition(order)
+                shufflePos = lap
+                target = order[lap]
             }
         } else if (idx >= 0 && idx + 1 <= tracks.lastIndex) {
             target = idx + 1
@@ -361,32 +640,75 @@ class PlaybackManager private constructor(context: Context) {
             target = 0
         }
 
-        if (target in tracks.indices) playAt(target) else exoPlayer.pause()
+        if (target in tracks.indices) {
+            playAt(target)
+        } else {
+            // Ran off the end of the queue with repeat off. Rather than dead
+            // air, ask for something similar; an absent/failing provider pauses
+            // exactly as before.
+            val last = tracks.getOrNull(idx)
+            if (last != null) startAutoplay(last) else exoPlayer.pause()
+        }
+    }
+
+    /**
+     * Extends the queue with similar tracks once it runs out, then plays the
+     * first of them. Nothing already in the queue is accepted, so a provider
+     * that keeps returning the same tracks can't build an endless loop.
+     */
+    private fun startAutoplay(from: Track) {
+        val provider = autoplayProvider
+        if (provider == null) {
+            exoPlayer.pause()
+            return
+        }
+        if (autoplayJob?.isActive == true) return
+
+        val generation = playGeneration
+        autoplayJob = scope.launch {
+            val candidates = runCatching { provider(from) }.getOrElse { emptyList() }
+            // The user picked something while we were fetching — drop this.
+            if (generation != playGeneration) return@launch
+
+            val known = _queue.value.mapTo(HashSet()) { it.id }
+            val fresh = candidates.filter { it.id !in known }
+            if (fresh.isEmpty()) {
+                exoPlayer.pause()
+                appendDiagnostic("AUTOPLAY exhausted after id=${from.id}")
+                return@launch
+            }
+
+            appendToQueue(fresh)
+            persistQueue()
+            val first = _queue.value.size - fresh.size
+            if (_isShuffle.value && shuffleOrder.isNotEmpty()) {
+                val pos = shuffleOrder.indexOf(first)
+                if (pos >= 0) shufflePos = pos
+            }
+            appendDiagnostic("AUTOPLAY appended ${fresh.size} after id=${from.id}")
+            playAt(first)
+        }
     }
 
     fun playPrevious() {
         if (exoPlayer.currentPosition > 3000) {
-            exoPlayer.seekTo(0)
-            _positionMs.value = 0
+            restartCurrentTrack()
             return
         }
 
-        val tracks = _queue.value
-        val idx = _queueIndex.value
-
-        if (_isShuffle.value && shufflePos > 0 && shuffleOrder.isNotEmpty()) {
-            val target = shuffleOrder[shufflePos - 1]
-            if (target in tracks.indices) {
-                playAt(target)
-                return
-            }
-        }
-
-        if (idx - 1 >= 0) {
-            playAt(idx - 1)
+        // `null` means "restart the current track" — at the head of a shuffle
+        // lap, or at index 0 of a sequential queue. See QueueOrder.previousTarget.
+        val target = QueueOrder.previousTarget(
+            queueSize = _queue.value.size,
+            cursor = _queueIndex.value,
+            shuffleOn = _isShuffle.value,
+            shuffleOrder = shuffleOrder,
+            shufflePos = shufflePos
+        )
+        if (target != null) {
+            playAt(target)
         } else {
-            exoPlayer.seekTo(0)
-            _positionMs.value = 0
+            restartCurrentTrack()
         }
     }
 
@@ -408,20 +730,30 @@ class PlaybackManager private constructor(context: Context) {
             playTrack(track)
             return true
         }
-
-        val next = _queue.value + track
-        _queue.value = next
-        if (_isShuffle.value && shuffleOrder.isNotEmpty()) {
-            // Slot it into the unplayed tail so shuffle progress survives.
-            val insertAt = QueueOrder.shuffleTailInsertPosition(
-                shuffleOrder.size, shufflePos, Random
-            )
-            shuffleOrder = shuffleOrder.toMutableList().apply {
-                add(insertAt.coerceAtMost(size), next.lastIndex)
-            }
-        }
+        appendToQueue(listOf(track))
         persistQueue()
         return false
+    }
+
+    /**
+     * Append [tracks] to the end of the queue.
+     *
+     * When shuffle is on each new index is slotted into the *unplayed* tail
+     * (see [QueueOrder.shuffleTailInsertPosition]) so appending mid-shuffle
+     * neither jumps the queue nor strands the new songs behind the cursor.
+     */
+    private fun appendToQueue(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        val base = _queue.value.size
+        _queue.value = _queue.value + tracks
+        if (_isShuffle.value && shuffleOrder.isNotEmpty()) {
+            var order = shuffleOrder
+            for (i in tracks.indices) {
+                val insertAt = QueueOrder.shuffleTailInsertPosition(order.size, shufflePos, Random)
+                order = order.toMutableList().apply { add(insertAt.coerceAtMost(size), base + i) }
+            }
+            shuffleOrder = order
+        }
     }
 
     /** Insert directly after the playing track so it plays next. */
@@ -527,12 +859,64 @@ class PlaybackManager private constructor(context: Context) {
      * Rebuilds the shuffle permutation around [index], or clears it when shuffle
      * is off. All-or-nothing so shuffle can never be left enabled with a blank
      * permutation — see [QueueOrder.shuffleStateFor].
+     *
+     * The `!isShuffle` clause on the smart path keeps the invariant **total** in
+     * the other direction too. [QueueOrder.shuffleStateFor] returns an empty list
+     * when shuffle is off, but [QueueOrder.smartShuffleOrder] has no `shuffleOn`
+     * parameter and always returns a full permutation — so with Smart Shuffle on
+     * and Shuffle off, this method used to leave a populated `shuffleOrder`
+     * behind. That was inert only because every reader guards on `isShuffle`
+     * (see [playNext], [jumpTo], [removeFromQueue], [moveInQueue], [appendToQueue],
+     * [playNextInQueue]); the next reader that forgets the guard would have
+     * silently played a shuffled queue while the toggle said sequential. Falling
+     * through to [QueueOrder.shuffleStateFor] produces the same empty state the
+     * non-smart path already produces, so this changes nothing observable.
+     *
+     * When [smartShuffle] is on and a [smartShuffleScorer] is wired, the tail
+     * (everything after the current track) is bucketed by similarity score:
+     * high-similarity tracks play first, then medium, then low. Within each
+     * bucket the order is still random, so the result is "guided" rather than
+     * deterministic.
      */
     private fun rebuildShuffleOrder(index: Int) {
-        shuffleOrder = QueueOrder.shuffleStateFor(
-            size = _queue.value.size,
+        if (!smartShuffle || !_isShuffle.value || _queue.value.size <= 2) {
+            shuffleOrder = QueueOrder.shuffleStateFor(
+                size = _queue.value.size,
+                cursor = index,
+                shuffleOn = _isShuffle.value,
+                random = Random
+            )
+            shufflePos = 0
+            return
+        }
+
+        val scorer = smartShuffleScorer
+        if (scorer == null) {
+            shuffleOrder = QueueOrder.shuffleStateFor(
+                size = _queue.value.size,
+                cursor = index,
+                shuffleOn = _isShuffle.value,
+                random = Random
+            )
+            shufflePos = 0
+            return
+        }
+
+        val tracks = _queue.value
+        val current = tracks.getOrNull(index) ?: run {
+            shuffleOrder = QueueOrder.shuffleStateFor(
+                size = tracks.size, cursor = index,
+                shuffleOn = _isShuffle.value, random = Random
+            )
+            shufflePos = 0
+            return
+        }
+
+        val scores = scorer(current, tracks)
+        shuffleOrder = QueueOrder.smartShuffleOrder(
+            size = tracks.size,
             cursor = index,
-            shuffleOn = _isShuffle.value,
+            scores = scores,
             random = Random
         )
         shufflePos = 0
@@ -548,14 +932,20 @@ class PlaybackManager private constructor(context: Context) {
     fun togglePlay() {
         if (exoPlayer.isPlaying) {
             exoPlayer.pause()
+            // Capture the exact pause point; the ticker's 5 s throttle would
+            // otherwise leave the saved offset up to 5 s behind.
+            persistPosition(exoPlayer.currentPosition.coerceAtLeast(0))
         } else {
             if (exoPlayer.mediaItemCount == 0) {
                 // Queue restored from disk: the player has no source attached
                 // yet, so a bare play() would silently do nothing. Re-attach
-                // the track the cursor is sitting on and start it.
+                // the track the cursor is sitting on and start it — from the
+                // offset saved before the app was closed, if there is one.
                 val idx = _queueIndex.value
                 if (idx >= 0) {
-                    playAt(idx)
+                    val resumeAt = restoredPositionMs
+                    restoredPositionMs = 0
+                    playAt(idx, resumeAt)
                     return
                 }
             }
@@ -566,7 +956,69 @@ class PlaybackManager private constructor(context: Context) {
         }
     }
 
+    /**
+     * Starts a sleep timer, or turns it off when [durationMs] is null.
+     *
+     * Pausing goes through `exoPlayer.pause()` rather than [togglePlay] so that a
+     * timer expiring while playback is *already* paused cannot start it — the
+     * toggle would see "not playing" and resume the track at bedtime.
+     *
+     * When the timer expires the volume fades out over [FADE_OUT_MS] rather than
+     * cutting abruptly, so the pause at bedtime is gentle.
+     */
+    fun setSleepTimer(durationMs: Long?) {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        // If a previous fade was interrupted, restore full volume immediately.
+        sleepFadeFactor = 1f
+        applyVolume()
+
+        if (durationMs == null) {
+            _sleepTimerRemainingMs.value = null
+            return
+        }
+
+        _sleepTimerRemainingMs.value = durationMs
+        sleepTimerJob = scope.launch {
+            var remaining = durationMs
+            while (remaining > 0) {
+                delay(SLEEP_TICK_MS)
+                remaining -= SLEEP_TICK_MS
+                _sleepTimerRemainingMs.value = remaining.coerceAtLeast(0L)
+            }
+            // Gentle fade-out before pausing.
+            val fadeSteps = (FADE_OUT_MS / SLEEP_TICK_MS).toInt()
+            for (step in fadeSteps downTo 1) {
+                if (!isActive) return@launch
+                sleepFadeFactor = VolumeMix.sleepFadeFactor(step, fadeSteps)
+                applyVolume()
+                delay(SLEEP_TICK_MS)
+            }
+            exoPlayer.pause()
+            sleepFadeFactor = 1f
+            applyVolume()
+            _sleepTimerRemainingMs.value = null
+            sleepTimerJob = null
+            appendDiagnostic("SLEEP_TIMER faded and paused playback")
+        }
+    }
+
+    fun cancelSleepTimer() = setSleepTimer(null)
+
     fun release() {
+        // Otherwise the countdown coroutine outlives the player and calls
+        // pause() on a released ExoPlayer.
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        // An autoplay fetch may be mid-flight; it would call playAt on a
+        // released player when it returns.
+        autoplayJob?.cancel()
+        autoplayJob = null
+        // Last chance to record where we were before the process goes away.
+        persistPosition(exoPlayer.currentPosition.coerceAtLeast(0))
+        // Same for the listening total, which is batched — the ticker that
+        // normally flushes it is about to be torn down with the player.
+        statsManager.flush()
         exoPlayer.release()
     }
 
@@ -591,11 +1043,21 @@ class PlaybackManager private constructor(context: Context) {
         }
     }
 
+    /**
+     * Writes just the playback offset. Kept separate from [persistQueue] because
+     * this runs on a timer while the queue JSON does not — re-serialising the
+     * whole queue every 5 seconds would be pure waste.
+     */
+    private fun persistPosition(ms: Long) {
+        lastPersistedPositionMs = ms
+        runCatching { prefs.edit().putLong(KEY_POSITION, ms).apply() }
+    }
+
     /** Restores the last queue paused, so the app reopens where it left off. */
     private fun restoreQueue() {
         try {
             val json = prefs.getString(KEY_QUEUE, null) ?: return
-            val type = object : TypeToken<List<Track>>() {}.type
+            val type = listTypeOf(Track::class.java)
             // SafeGson normalises every track it parses, so tracks persisted
             // before a field existed can't hand nulls to the rest of the app.
             val tracks: List<Track>? = gson.fromJson(json, type)
@@ -615,6 +1077,20 @@ class PlaybackManager private constructor(context: Context) {
             tracks.getOrNull(index)?.let { track ->
                 _currentTrack.value = track
                 _durationMs.value = track.duration * 1000L
+
+                // Resume offset, discarded when it lands in the outro: opening
+                // the app to a song that ends two seconds later reads as a bug.
+                val totalMs = track.duration * 1000L
+                val saved = prefs.getLong(KEY_POSITION, 0L).coerceAtLeast(0L)
+                restoredPositionMs = if (totalMs > 0 && saved > totalMs - RESUME_TAIL_GRACE_MS) {
+                    0L
+                } else {
+                    saved
+                }
+                lastPersistedPositionMs = restoredPositionMs
+                // Show the resume point in the UI straight away, even though the
+                // player has nothing loaded yet.
+                _positionMs.value = restoredPositionMs
             }
         } catch (e: Exception) {
             Log.w(TAG, "Queue restore failed: ${e.message}")

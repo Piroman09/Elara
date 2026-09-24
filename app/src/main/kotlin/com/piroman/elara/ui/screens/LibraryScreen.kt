@@ -1,12 +1,14 @@
-package com.aesthetic.spotify.ui.screens
+package com.piroman.elara.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AvTimer
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
@@ -24,27 +26,32 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aesthetic.spotify.ui.MainViewModel
-import com.aesthetic.spotify.ui.components.ImportSpotifyDialog
-import com.aesthetic.spotify.ui.components.TextInputDialog
-import com.aesthetic.spotify.ui.theme.AuraBg
-import com.aesthetic.spotify.ui.theme.AuraCard
-import com.aesthetic.spotify.ui.theme.AuraPurple
-import com.aesthetic.spotify.ui.theme.AuraDownload
-import com.aesthetic.spotify.ui.theme.DownloadsBrush
-import com.aesthetic.spotify.ui.theme.LikedSongsBrush
-import com.aesthetic.spotify.ui.theme.PlaylistBrush
-import com.aesthetic.spotify.ui.theme.SpotifyBrand
-import com.aesthetic.spotify.ui.theme.AuraTextSecondary
+import com.piroman.elara.data.stats.ListeningStatsFormat
+import com.piroman.elara.ui.MainViewModel
+import com.piroman.elara.ui.components.ImportSpotifyDialog
+import com.piroman.elara.ui.components.SectionHeading
+import com.piroman.elara.ui.components.TextInputDialog
+import com.piroman.elara.ui.theme.AuraBg
+import com.piroman.elara.ui.theme.AuraCard
+import com.piroman.elara.ui.theme.AuraPurple
+import com.piroman.elara.ui.theme.AuraDownload
+import com.piroman.elara.ui.theme.DownloadsBrush
+import com.piroman.elara.ui.theme.LikedSongsBrush
+import com.piroman.elara.ui.theme.PlaylistBrush
+import com.piroman.elara.ui.theme.SpotifyBrand
+import com.piroman.elara.ui.theme.AuraTextSecondary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
     viewModel: MainViewModel,
-    onOpenPlaylist: (String) -> Unit = {}
+    onOpenPlaylist: (String) -> Unit = {},
+    onOpenDownloads: () -> Unit = {},
+    onOpenStats: () -> Unit = {}
 ) {
     val likedTracks by viewModel.likedTracks.collectAsState()
     val downloadedTracks by viewModel.downloadedTracks.collectAsState()
+    val downloadedBytes by viewModel.downloadedBytes.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val sourceSetting by viewModel.sourceSetting.collectAsState()
     var showCreatePlaylist by remember { mutableStateOf(false) }
@@ -77,7 +84,57 @@ fun LibraryScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Stats snapshot card
+        val totalMs by viewModel.totalListeningMs.collectAsState()
+        val uniqueTracks by viewModel.uniqueTracksListened.collectAsState()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(AuraCard)
+                .clickable(onClick = onOpenStats)
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(AuraPurple.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.AvTimer,
+                    contentDescription = null,
+                    tint = AuraPurple,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = ListeningStatsFormat.listenedLabel(totalMs),
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "$uniqueTracks unique tracks",
+                    color = AuraTextSecondary,
+                    fontSize = 12.sp
+                )
+            }
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = AuraTextSecondary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // ── Playlists header ────────────────────────────────────────
@@ -87,12 +144,12 @@ fun LibraryScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "Playlists",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp
-                    )
+                    // Was a hand-written `Color.White / 18.sp / Bold` copy of
+                    // Home's private heading. Now the one shared component, so
+                    // the two screens cannot drift. `bottomPadding = 0.dp`
+                    // because this row's spacing already comes from the
+                    // LazyColumn's own `spacedBy(12.dp)`.
+                    SectionHeading("Playlists", bottomPadding = 0.dp)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = { showImportSpotify = true }) {
                             Icon(
@@ -133,8 +190,12 @@ fun LibraryScreen(
                     icon = Icons.Default.DownloadDone,
                     brush = DownloadsBrush,
                     title = "Downloads",
-                    subtitle = "${downloadedTracks.size} songs saved offline",
-                    onClick = { onOpenPlaylist("downloads") }
+                    // Exactly the label the Downloads screen prints in its own
+                    // header, so the card and the screen it opens cannot disagree
+                    // about how much is saved — the same reason the stats row and
+                    // ListeningStatsScreen share ListeningStatsFormat.
+                    subtitle = summaryLabel(downloadedTracks.size, downloadedBytes),
+                    onClick = onOpenDownloads
                 )
             }
 
@@ -228,10 +289,15 @@ fun LibraryScreen(
     }
 
     if (showSourceSettings) {
-        com.aesthetic.spotify.ui.components.SourceSettingsDialog(
+        val dataSaver by viewModel.dataSaverEnabled.collectAsState()
+        com.piroman.elara.ui.components.SourceSettingsDialog(
             current = sourceSetting,
             onSelect = { viewModel.setSourceSetting(it) },
-            onDismiss = { showSourceSettings = false }
+            onDismiss = { showSourceSettings = false },
+            exportJson = { viewModel.exportBackupJson() },
+            importJson = { viewModel.importBackupJson(it) },
+            dataSaverEnabled = dataSaver,
+            onDataSaverChange = { viewModel.setDataSaver(it) }
         )
     }
 }

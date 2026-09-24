@@ -1,10 +1,10 @@
-package com.aesthetic.spotify.data.repository
+package com.piroman.elara.data.repository
 
 import android.content.Context
 import android.util.Log
-import com.aesthetic.spotify.data.model.SafeGson
-import com.aesthetic.spotify.data.model.Track
-import com.google.gson.reflect.TypeToken
+import com.piroman.elara.data.model.SafeGson
+import com.piroman.elara.data.model.Track
+import com.piroman.elara.data.model.listTypeOf
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,7 +58,7 @@ class TrendingCache private constructor(context: Context) {
 
         val json = prefs.getString(KEY_TRACKS_JSON, null) ?: return null
         return try {
-            val type = object : TypeToken<List<Track>>() {}.type
+            val type = listTypeOf(Track::class.java)
             val list = gson.fromJson<List<Track>>(json, type)
             if (list.isNullOrEmpty()) null else list
         } catch (e: Exception) {
@@ -73,7 +73,7 @@ class TrendingCache private constructor(context: Context) {
     fun getCachedTracksAnyAge(): List<Track>? {
         val json = prefs.getString(KEY_TRACKS_JSON, null) ?: return null
         return try {
-            val type = object : TypeToken<List<Track>>() {}.type
+            val type = listTypeOf(Track::class.java)
             gson.fromJson<List<Track>>(json, type)
         } catch (e: Exception) {
             null
