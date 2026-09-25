@@ -8,7 +8,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AvTimer
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
@@ -27,7 +26,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.piroman.elara.data.stats.ListeningStatsFormat
 import com.piroman.elara.ui.MainViewModel
 import com.piroman.elara.ui.components.ImportSpotifyDialog
 import com.piroman.elara.ui.components.SectionHeading
@@ -140,56 +138,11 @@ fun LibraryScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Stats snapshot card
-        val totalMs by viewModel.totalListeningMs.collectAsState()
-        val uniqueTracks by viewModel.uniqueTracksListened.collectAsState()
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(AuraCard)
-                .clickable(onClick = onOpenStats)
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(AuraPurple.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.AvTimer,
-                    contentDescription = null,
-                    tint = AuraPurple,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = ListeningStatsFormat.listenedLabel(totalMs),
-                    color = Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = "$uniqueTracks unique tracks",
-                    color = AuraTextSecondary,
-                    fontSize = 12.sp
-                )
-            }
-            Icon(
-                Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = AuraTextSecondary,
-                modifier = Modifier.size(20.dp)
-            )
-        }
-
+        // The lifetime stats snapshot card that used to sit here was removed
+        // by request — Wrapped (above) now carries the numbers story. The
+        // lifetime totals still live on the ListeningStatsScreen route; the
+        // `onOpenStats` entry point is kept so that screen can be re-wired
+        // elsewhere without touching the scaffold again.
         Spacer(modifier = Modifier.height(20.dp))
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -248,8 +201,7 @@ fun LibraryScreen(
                     title = "Downloads",
                     // Exactly the label the Downloads screen prints in its own
                     // header, so the card and the screen it opens cannot disagree
-                    // about how much is saved — the same reason the stats row and
-                    // ListeningStatsScreen share ListeningStatsFormat.
+                    // about how much is saved.
                     subtitle = summaryLabel(downloadedTracks.size, downloadedBytes),
                     onClick = onOpenDownloads
                 )

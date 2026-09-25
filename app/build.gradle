@@ -126,6 +126,12 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.17.3 (build 21) — 2026-09-25. Library layout by request: the
+        // lifetime "10 hours 14 minutes listened" snapshot card is gone;
+        // Wrapped is the only stats card above Playlists. The stats screen
+        // itself still exists via its route, and Wrapped remains the monthly
+        // slice of the same data.
+        //
         // 1.17.2 (build 20) — 2026-09-25. Second critical fix in the same
         // tap: build 19 forwarded the PCM but never **flipped** the output
         // buffer. replaceOutputBuffer hands out a write-mode buffer (position
@@ -237,8 +243,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 20
-        versionName = "1.17.2"
+        versionCode = 21
+        versionName = "1.17.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true
