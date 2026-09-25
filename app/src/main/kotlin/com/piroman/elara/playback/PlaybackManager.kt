@@ -1,6 +1,7 @@
 package com.piroman.elara.playback
 
 import android.content.Context
+import android.media.audiofx.EnvironmentalReverb
 import android.net.Uri
 import android.util.Log
 import androidx.annotation.OptIn
@@ -9,6 +10,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -20,6 +22,7 @@ import com.piroman.elara.data.diagnostics.StartupTiming
 import com.piroman.elara.data.history.PlayHistoryManager
 import com.piroman.elara.data.model.SafeGson
 import com.piroman.elara.data.stats.ListeningStatsManager
+import com.piroman.elara.data.model.SpeedMode
 import com.piroman.elara.data.model.Track
 import com.piroman.elara.data.model.listTypeOf
 import kotlinx.coroutines.CancellationException
@@ -162,8 +165,16 @@ class PlaybackManager private constructor(context: Context) {
         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
         .build()
 
+    /**
+     * Observes decoded PCM on its way to the speaker so the full-screen player
+     * can draw a live spectrum. Installed in the sink via
+     * [VisualizerRenderersFactory]; costs nothing while [SpectrumTapper.active]
+     * is false (zero-copy pass-through).
+     */
+    val spectrumTapper = SpectrumTapper()
+
     val exoPlayer: ExoPlayer = StartupTiming.measure("ExoPlayer.build") {
-        ExoPlayer.Builder(context)
+        ExoPlayer.Builder(context, VisualizerRenderersFactory(context, spectrumTapper))
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(context).setDataSourceFactory(
                     // DefaultDataSource routes file:// to FileDataSource (downloaded
@@ -305,6 +316,18 @@ class PlaybackManager private constructor(context: Context) {
      */
     var autoplayProvider: (suspend (Track) -> List<Track>)? = null
 
+    /**
+     * The active speed mode. Written by MainViewModel from [SpeedModePreferences];
+     * applied to the player (rate + pitch + optional reverb) by [applySpeedMode].
+     */
+    @Volatile var speedMode: SpeedMode = SpeedMode.NORMAL
+
+    /** Reverb engine for Slowed mode. Null until first attached to a session. */
+    private var environmentalReverb: EnvironmentalReverb? = null
+
+    /** The audio session the reverb is currently attached to. */
+    private var reverbSessionId = 0
+
     private val resolvedUrls = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var playGeneration = 0
 
@@ -322,8 +345,18 @@ class PlaybackManager private constructor(context: Context) {
     /** Last offset written to disk, so the ticker only persists real movement. */
     private var lastPersistedPositionMs = -1L
 
+    /** The mode that was last applied to the player, so mode switches re-apply. */
+    private var appliedSpeedMode: SpeedMode? = null
+
     /** Notifies the app when a downloaded file turned out to be missing/corrupt. */
     var onDownloadMissing: ((Track) -> Unit)? = null
+
+    /**
+     * Monthly listening aggregate for Wrapped. Set by MainViewModel at init;
+     * [playAt] and the position ticker feed it the same events history and
+     * listening stats already receive — no third path that could disagree.
+     */
+    var wrappedStats: com.piroman.elara.data.history.WrappedStatsManager? = null
 
     private var lastUrlWasLocal = false
     private val autoHealedIds = mutableSetOf<String>()
@@ -395,6 +428,7 @@ class PlaybackManager private constructor(context: Context) {
                     // Only count real forward progress (ignore seeks and resets).
                     if (delta in 1..10_000) {
                         statsManager.addTime(delta)
+                        wrappedStats?.addListeningTime(delta)
                     }
                     lastTickPos = pos
                     _positionMs.value = pos
@@ -557,6 +591,7 @@ class PlaybackManager private constructor(context: Context) {
         val track = tracks[index]
         _currentTrack.value = track
         statsManager.recordTrack(track.id)
+        wrappedStats?.recordPlay(track.id)
         if (recordHistory) playHistory.record(track)
         val start = startPositionMs.coerceAtLeast(0L)
         _positionMs.value = start
@@ -636,6 +671,10 @@ class PlaybackManager private constructor(context: Context) {
                 // so the track starts at the resume point rather than the intro.
                 if (start > 0) exoPlayer.seekTo(start)
                 exoPlayer.play()
+                // Apply the speed mode on every start, not once at init: the
+                // mode can change between tracks, and some codec paths reset
+                // sink parameters on stream changes. Cheap when already applied.
+                applySpeedMode(exoPlayer.isPlaying)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1148,6 +1187,91 @@ class PlaybackManager private constructor(context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "Queue restore failed: ${e.message}")
         }
+    }
+
+    /**
+     * Applies [speedMode] to the player: rate and pitch move together so the
+     * track slows down *and* drops in pitch (or speeds up and rises) — that
+     * combination is what gives Slowed and Nightcore their character. A rate
+     * change alone would time-stretch at constant pitch and sound like nothing.
+     *
+     * Slowed mode additionally attaches an `EnvironmentalReverb` to the audio
+     * session, giving the wash the trend is named for. The effect must be
+     * constructed with the session id (attachment happens at construction), and
+     * the session can be re-created after a stream-format change — so the
+     * reverb is rebuilt whenever the id differs from the one it was attached
+     * to. This runs after play() on every track start for exactly that reason.
+     *
+     * Everything is guarded: audio-effect APIs throw and misbehave freely on
+     * odd devices, and a cosmetic effect must never take playback down (see
+     * the 1.16 hardening).
+     *
+     * `force` skips the already-applied check — used when the mode changes,
+     * because the reverb must be attached or detached even when the rate ends
+     * up the same.
+     */
+    private fun applySpeedMode(force: Boolean = false) {
+        val mode = speedMode
+        if (!force && appliedSpeedMode == mode) return
+        appliedSpeedMode = mode
+        runCatching {
+            val params = exoPlayer.playbackParameters
+            if (params.speed != mode.speed || params.pitch != mode.speed) {
+                exoPlayer.playbackParameters =
+                    PlaybackParameters(mode.speed, mode.speed)
+            }
+            val sessionId = exoPlayer.audioSessionId
+            if (mode == SpeedMode.SLOWED_REVERB && sessionId > 0) {
+                var reverb = environmentalReverb
+                if (reverb == null || reverbSessionId != sessionId) {
+                    // Session changed (or first use): rebuild the effect against
+                    // the current one. An effect constructed against a dead
+                    // session id simply never fires.
+                    runCatching { environmentalReverb?.release() }
+                    reverb = EnvironmentalReverb(0, sessionId)
+                    environmentalReverb = reverb
+                    reverbSessionId = sessionId
+                }
+                reverb.enabled = false
+                // Every Settings field is Short (Android's audio-effect API is
+                // 16-bit throughout): ratios and levels in permille/millibels.
+                reverb.properties = EnvironmentalReverb.Settings().apply {
+                    decayHFRatio = 600 // 0.6 ratio
+                    decayTime = 1800 // ms
+                    density = 700 // ‰
+                    diffusion = 800 // ‰
+                    reflectionsDelay = 60 // ms
+                    reflectionsLevel = -6000 // mB
+                    reverbDelay = 40 // ms
+                    reverbLevel = -1000 // mB — wet but not cavernous
+                    roomHFLevel = -800 // mB
+                    roomLevel = -600 // mB
+                }
+                reverb.enabled = true
+            } else {
+                environmentalReverb?.enabled = false
+            }
+        }.onFailure {
+            Log.w(TAG, "applySpeedMode(${mode.name}) failed: ${it.message}")
+            appendDiagnostic("SPEED_MODE_FAIL mode=${mode.name} ${it.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Init-time apply from a stored preference: the parameters take effect
+     * immediately; the reverb attaches on the first track start (see
+     * [applySpeedMode] — it needs a live session id, which does not exist yet).
+     */
+    fun applyStoredSpeedMode() = applySpeedMode(force = true)
+
+    /**
+     * Public hook for a mode change (MainViewModel.setSpeedMode): resets the
+     * applied marker so [applySpeedMode] re-attaches the reverb / rewrites the
+     * parameters even when the new mode's rate matches what is playing.
+     */
+    fun onSpeedModeChanged() {
+        appliedSpeedMode = null
+        applySpeedMode()
     }
 
     /**

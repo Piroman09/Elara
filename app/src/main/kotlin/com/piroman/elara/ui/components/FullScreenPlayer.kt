@@ -270,7 +270,24 @@ fun FullScreenPlayer(
                 }
             }
 
-            Spacer(modifier = Modifier.height(36.dp))
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Live spectrum driven by the audio tap in the player's sink. The
+            // bars live in their own composable so the 60 fps draw loop never
+            // touches this file's other state. Height deliberately small: it
+            // should read as the song breathing, not a screensaver.
+            val reducedMotion = rememberReducedMotion()
+            LiveSpectrumBars(
+                tapper = viewModel.spectrumTapper,
+                isPlaying = isPlaying,
+                accentColor = accent,
+                reducedMotion = reducedMotion,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Track title and artist
             Column(modifier = Modifier.fillMaxWidth()) {

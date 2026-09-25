@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -34,6 +35,7 @@ import com.piroman.elara.ui.components.TextInputDialog
 import com.piroman.elara.ui.theme.AuraBg
 import com.piroman.elara.ui.theme.AuraCard
 import com.piroman.elara.ui.theme.AuraPurple
+import com.piroman.elara.ui.theme.AuraViolet
 import com.piroman.elara.ui.theme.AuraDownload
 import com.piroman.elara.ui.theme.DownloadsBrush
 import com.piroman.elara.ui.theme.LikedSongsBrush
@@ -47,7 +49,8 @@ fun LibraryScreen(
     viewModel: MainViewModel,
     onOpenPlaylist: (String) -> Unit = {},
     onOpenDownloads: () -> Unit = {},
-    onOpenStats: () -> Unit = {}
+    onOpenStats: () -> Unit = {},
+    onOpenWrapped: () -> Unit = {}
 ) {
     val likedTracks by viewModel.likedTracks.collectAsState()
     val downloadedTracks by viewModel.downloadedTracks.collectAsState()
@@ -85,6 +88,59 @@ fun LibraryScreen(
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+
+        // Wrapped entry: sits above the lifetime stats row because its data is
+        // the freshest slice of the same story — this month vs. all time.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(AuraPurple.copy(alpha = 0.25f), AuraCard)
+                    )
+                )
+                .clickable(onClick = onOpenWrapped)
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(AuraPurple.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Whatshot,
+                    contentDescription = null,
+                    tint = AuraViolet,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Elara Wrapped",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Your month in music",
+                    color = AuraTextSecondary,
+                    fontSize = 12.sp
+                )
+            }
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = AuraTextSecondary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Stats snapshot card
         val totalMs by viewModel.totalListeningMs.collectAsState()

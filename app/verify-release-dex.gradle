@@ -40,6 +40,7 @@ def requiredProguardDirectives = [
         '-keep class com.piroman.elara.data.download.DownloadManager$Entry { *; }',
         '-keep class com.piroman.elara.data.download.DownloadManager$Pending { *; }',
         '-keep class com.piroman.elara.data.history.PlayStat { *; }',
+        '-keep class com.piroman.elara.data.history.MonthAggregate { *; }',
         '-keep class com.piroman.elara.data.backup.ElaraBackup { *; }',
 ]
 
@@ -57,6 +58,7 @@ def requiredTypes = [
         'com.piroman.elara.data.download.DownloadManager$Entry',
         'com.piroman.elara.data.download.DownloadManager$Pending',
         'com.piroman.elara.data.history.PlayStat',
+        'com.piroman.elara.data.history.MonthAggregate',
         'com.piroman.elara.data.backup.ElaraBackup',
         // Deserialised by Retrofit's Gson converter. One representative per API.
         'com.piroman.elara.data.network.JioSong',
@@ -82,6 +84,10 @@ def requiredFields = [
         // Play counts. `count` is the one that matters: lose it and every track
         // silently reads back as zero plays, so "Most played" empties itself.
         'data.history.PlayStat'    : ['track', 'count'],
+        // Wrapped's monthly aggregate. Losing `trackCounts` resets the month's
+        // top-songs ranking; losing `month` makes every rollover think the
+        // month just turned and wipes the aggregate.
+        'data.history.MonthAggregate': ['month', 'ms', 'plays', 'trackCounts'],
         // The exported library document. Losing `playStats` or `recentTracks`
         // here means a restore silently drops them instead of failing.
         'data.backup.ElaraBackup'  : ['version', 'exportedAt', 'playlists', 'likedTracks',

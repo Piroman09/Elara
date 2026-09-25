@@ -27,6 +27,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Speed
+import com.piroman.elara.data.model.SpeedMode
 import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -76,6 +78,7 @@ fun PlayerSettingsScreen(
     val crossfade by viewModel.crossfadeSeconds.collectAsState()
     val smartShuffle by viewModel.smartShuffleEnabled.collectAsState()
     val dataSaver by viewModel.dataSaverEnabled.collectAsState()
+    val speedMode by viewModel.speedMode.collectAsState()
 
     Column(
         modifier = Modifier
@@ -110,6 +113,68 @@ fun PlayerSettingsScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 100.dp)
         ) {
             item { SectionHeader("PLAYBACK") }
+
+            item {
+                SettingsCard {
+                    // Segmented control rather than three switches: the modes
+                    // are mutually exclusive states of one thing, and a switch
+                    // grid would invite impossible combinations.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconPill(Icons.Default.Speed)
+                        Spacer(modifier = Modifier.width(14.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Speed",
+                                color = AuraTextPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Slowed drops pitch, Nightcore lifts it.",
+                                color = AuraTextSecondary,
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SpeedMode.entries.forEach { mode ->
+                            val selected = mode == speedMode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (selected) AuraPurple.copy(alpha = 0.2f)
+                                        else AuraCardStrong
+                                    )
+                                    .clickable { viewModel.setSpeedMode(mode) }
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = mode.label,
+                                    color = if (selected) AuraViolet else AuraTextSecondary,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            item { Spacer(modifier = Modifier.height(16.dp)) }
 
             item {
                 SettingsCard {

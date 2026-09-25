@@ -47,6 +47,7 @@ import com.piroman.elara.ui.screens.DownloadsScreen
 import com.piroman.elara.ui.screens.HomeScreen
 import com.piroman.elara.ui.screens.LibraryScreen
 import com.piroman.elara.ui.screens.ListeningStatsScreen
+import com.piroman.elara.ui.screens.WrappedScreen
 import com.piroman.elara.ui.screens.PlayerSettingsScreen
 import com.piroman.elara.ui.screens.PlaylistDetailScreen
 import com.piroman.elara.ui.screens.SearchScreen
@@ -222,6 +223,9 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
                             },
                             onOpenStats = {
                                 navController.navigate("listening_stats")
+                            },
+                            onOpenWrapped = {
+                                navController.navigate("wrapped")
                             }
                         )
                     }
@@ -257,6 +261,12 @@ fun MainScaffold(viewModel: MainViewModel = viewModel()) {
                     }
                     composable("listening_stats") {
                         ListeningStatsScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("wrapped") {
+                        WrappedScreen(
                             viewModel = viewModel,
                             onBack = { navController.popBackStack() }
                         )

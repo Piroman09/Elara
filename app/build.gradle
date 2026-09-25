@@ -126,6 +126,23 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.17 (build 18) — 2026-09-25. Three features land together:
+        //
+        //  1. Live visualizer — a SpectrumTapper rides the player's audio sink
+        //     (pass-through AudioProcessor) and the full-screen player draws
+        //     24 log-spaced bars with attack/decay smoothing; costs nothing
+        //     while the player is collapsed. The DSP (SpectrumAnalyzer) is
+        //     pure and unit-tested.
+        //  2. Speed modes — Normal / Slowed (rate 0.85 + reverb) / Nightcore
+        //     (1.25) as a segmented control in Player Settings, persisted and
+        //     re-applied per track start; reverb attaches per audio session
+        //     and every step is guarded like the 1.16 hardening demands.
+        //  3. Elara Wrapped — monthly plays / minutes / top songs, recorded
+        //     from the same playback events history and stats already use,
+        //     with a shareable text recap; entry point in Library above the
+        //     lifetime stats row. The aggregate's Gson shape is registered in
+        //     proguard-rules.pro and verify-release-dex.gradle.
+        //
         // 1.16 (build 17) — 2026-09-25. "The app suddenly stops" hardening: a
         // static audit of every coroutine and callback found exactly one real
         // crash path — PlaybackManager.playAt's resolve chain ran unguarded in
@@ -198,8 +215,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 17
-        versionName = "1.16"
+        versionCode = 18
+        versionName = "1.17"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true

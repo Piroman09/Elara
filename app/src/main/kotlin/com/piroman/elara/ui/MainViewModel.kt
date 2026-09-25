@@ -17,6 +17,7 @@ import com.piroman.elara.data.model.LyricLine
 import com.piroman.elara.data.diagnostics.StartupTiming
 import com.piroman.elara.data.model.MusicSource
 import com.piroman.elara.data.model.SafeGson
+import com.piroman.elara.data.model.SpeedMode
 import com.piroman.elara.data.model.Track
 import com.piroman.elara.data.playlist.Playlist
 import com.piroman.elara.data.playlist.PlaylistManager
@@ -26,8 +27,11 @@ import com.piroman.elara.data.repository.TrendingCachePolicy
 import com.piroman.elara.data.lyrics.LyricsCache
 import com.piroman.elara.data.source.DataSaverPreferences
 import com.piroman.elara.data.source.PlaybackPreferences
+import com.piroman.elara.data.source.SpeedModePreferences
 import com.piroman.elara.data.source.SourcePreferences
 import com.piroman.elara.data.source.SourceSetting
+import com.piroman.elara.data.history.MonthAggregate
+import com.piroman.elara.data.history.WrappedStatsManager
 import com.piroman.elara.data.stats.ListeningStatsManager
 import com.piroman.elara.data.network.SpotifyPlaylistImporter
 import com.piroman.elara.data.network.YouTubeMusicApi
@@ -39,9 +43,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.stateIn
+import java.time.YearMonth
+import java.time.format.TextStyle
+import java.util.Locale
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -54,6 +63,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val playlistManager = PlaylistManager.getInstance(application)
     private val sourcePreferences = SourcePreferences.getInstance(application)
     private val dataSaverPrefs = DataSaverPreferences.getInstance(application)
+    private val speedModePrefs = SpeedModePreferences.getInstance(application)
+    private val wrappedStats = WrappedStatsManager.getInstance(application)
     private val playbackPrefs = PlaybackPreferences.getInstance(application)
     private val lyricsCache = LyricsCache.getInstance(application)
     private val statsManager = ListeningStatsManager.getInstance(application)
@@ -104,6 +115,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         dataSaverPrefs.set(enabled)
     }
 
+    /** Slowed / Normal / Nightcore playback mode. See [SpeedMode]. */
+    val speedMode: StateFlow<SpeedMode> = speedModePrefs.mode
+
+    fun setSpeedMode(mode: SpeedMode) {
+        speedModePrefs.setMode(mode)
+        playbackManager.speedMode = mode
+        playbackManager.onSpeedModeChanged()
+    }
+
     /** Whether autoplay (append similar tracks when the queue ends) is on. */
     val autoplayEnabled: StateFlow<Boolean> = playbackPrefs.autoplayEnabled
     val crossfadeSeconds: StateFlow<Int> = playbackPrefs.crossfadeSeconds
@@ -116,6 +136,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * before passing it to [android.media.audiofx.AudioEffect].
      */
     val audioSessionId: Int get() = playbackManager.exoPlayer.audioSessionId
+
+    /** Live spectrum source for the full-screen player's visualizer. */
+    val spectrumTapper get() = playbackManager.spectrumTapper
+
+    /** This month's listening aggregate, as recorded for Wrapped. */
+    val monthAggregate: StateFlow<MonthAggregate> = wrappedStats.aggregate
+
+    /**
+     * This month's most-played tracks, resolved from the aggregate's id map
+     * against every track source the app holds (history, likes, playlists).
+     *
+     * `by lazy` is load-bearing: the flow joins [ _likedTracks], which is
+     * declared further down the class — evaluating this at construction would
+     * read it before its initializer ran. First access happens from the UI,
+     * long after init, so lazy both fixes the ordering and avoids paying for
+     * the join on screens that never open Wrapped.
+     *
+     * Recomputed when either side changes; the aggregate is deliberately
+     * capped (300 ids), so the join stays cheap. Tracks the app can no longer
+     * find (played once, then pruned from every list) are skipped.
+     */
+    val monthTopTracks: StateFlow<List<Pair<Track, Int>>> by lazy {
+        combine(wrappedStats.aggregate, _likedTracks) { agg, _ ->
+            deriveMonthTopTracks(agg)
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            emptyList()
+        )
+    }
+
+    private fun deriveMonthTopTracks(agg: MonthAggregate): List<Pair<Track, Int>> {
+        if (agg.trackCounts.isEmpty()) return emptyList()
+        val lookup = HashMap<String, Track>()
+        for (t in recentlyPlayed.value) lookup[t.id] = t
+        for (t in mostPlayed.value) lookup[t.id] = t
+        for (t in _likedTracks.value) lookup[t.id] = t
+        for (p in playlistManager.playlists.value) {
+            for (t in p.tracks) lookup[t.id] = t
+        }
+        return agg.trackCounts.entries
+            .mapNotNull { (id, count) -> lookup[id]?.let { it to count } }
+            .sortedByDescending { it.second }
+            .take(10)
+    }
+
+    /** Formats this month's listening total for the recap headline. */
+    fun monthLabel(agg: MonthAggregate): String {
+        val ym = YearMonth.parse(agg.month)
+        return ym.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
+            .replaceFirstChar { it.uppercase(Locale.getDefault()) } + " ${ym.year}"
+    }
+
+    /** Minute total for the recap, computed the same way as the stats screen. */
+    fun monthMinutes(agg: MonthAggregate): Long = agg.ms / 60_000
 
     /** Total milliseconds actually listened to (not including pauses or seeks). */
     val totalListeningMs: StateFlow<Long> = statsManager.totalMs
@@ -628,6 +703,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Apply stored playback preferences.
         playbackManager.crossfadeMs = playbackPrefs.crossfadeSeconds.value * 1_000L
         playbackManager.smartShuffle = playbackPrefs.smartShuffleEnabled.value
+        playbackManager.speedMode = speedModePrefs.mode.value
+        playbackManager.applyStoredSpeedMode()
+        playbackManager.wrappedStats = wrappedStats
         playbackManager.smartShuffleScorer = { current, tracks ->
             tracks.mapIndexed { index, track ->
                 index to scoreTrack(current, track)

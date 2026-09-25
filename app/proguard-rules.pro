@@ -30,6 +30,7 @@
 -keep class com.piroman.elara.data.download.DownloadManager$Entry { *; }
 -keep class com.piroman.elara.data.download.DownloadManager$Pending { *; }
 -keep class com.piroman.elara.data.history.PlayStat { *; }
+-keep class com.piroman.elara.data.history.MonthAggregate { *; }
 -keep class com.piroman.elara.data.backup.ElaraBackup { *; }
 
 # --- Gson: generic type resolution -----------------------------------------
