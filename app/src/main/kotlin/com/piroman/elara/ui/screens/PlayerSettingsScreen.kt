@@ -48,7 +48,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.piroman.elara.BuildConfig
 import com.piroman.elara.ui.MainViewModel
 import com.piroman.elara.ui.theme.AuraBg
 import com.piroman.elara.ui.theme.AuraCardStrong
@@ -203,18 +202,9 @@ fun PlayerSettingsScreen(
             // build.
             item { Spacer(modifier = Modifier.height(28.dp)) }
 
+            // The maker's mark: the only footer line, deliberately tiny so it
+            // reads as a quiet signature rather than a feature of the screen.
             item {
-                Text(
-                    text = "Elara ${BuildConfig.VERSION_NAME} " +
-                        "(build ${BuildConfig.VERSION_CODE})",
-                    color = AuraTextTertiary,
-                    fontSize = 11.sp,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                // The maker's mark: one step below the version line in an even
-                // smaller size, so it reads as a quiet signature rather than a
-                // feature of the screen.
                 Text(
                     text = "made with ❤️ by piroman",
                     color = AuraTextTertiary,
