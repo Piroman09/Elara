@@ -78,21 +78,33 @@ class SpectrumTapper : BaseAudioProcessor() {
 
         // **The speaker's data path comes first.** A BaseAudioProcessor owns
         // the audio: whatever it does not write into the output buffer never
-        // reaches the sink — which is exactly the silence build 18 shipped
-        // (the first version of this method only observed the input and
-        // never forwarded it). Forwarding is unconditional and byte-exact.
-        if (!active.get() || !analyse) {
-            replaceOutputBuffer(remaining).put(inputBuffer)
-            return
+        // reaches the sink — and, just as fatally, a buffer that is written
+        // but never **flipped** is read back as zero bytes. The buffer
+        // [replaceOutputBuffer] hands out is in write mode (position at the
+        // data end, limit at capacity); the sink drains it position→limit, so
+        // it must be flipped into read mode first. Build 18 never forwarded;
+        // build 19 forwarded but never flipped — the sink read 0 bytes and
+        // playback stalled in "buffering" forever. Media3's own
+        // TeeAudioProcessor flips right after its put(); so does this.
+        val output = replaceOutputBuffer(remaining)
+        if (active.get() && analyse) {
+            // Analyze a read-only duplicate while the real buffer is
+            // forwarded. duplicate() shares the bytes but keeps an
+            // independent cursor, so consuming inputBuffer does not disturb
+            // it.
+            inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
+            val view = inputBuffer.duplicate()
+            output.put(inputBuffer)
+            output.flip()
+            analyseView(view)
+        } else {
+            output.put(inputBuffer)
+            output.flip()
         }
+    }
 
-        // Analyze a read-only duplicate while the real buffer is forwarded.
-        // duplicate() shares the bytes but keeps an independent cursor, so
-        // the put() below consuming `inputBuffer` does not disturb it.
-        inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
-        val view = inputBuffer.duplicate()
-        replaceOutputBuffer(remaining).put(inputBuffer)
-
+    /** Band analysis over a read-only 16-bit LE view of one input buffer. */
+    private fun analyseView(view: ByteBuffer) {
         var sumSquares = 0.0
         var taken = 0
         var i = view.position()

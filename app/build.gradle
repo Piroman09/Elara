@@ -126,6 +126,17 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.17.2 (build 20) — 2026-09-25. Second critical fix in the same
+        // tap: build 19 forwarded the PCM but never **flipped** the output
+        // buffer. replaceOutputBuffer hands out a write-mode buffer (position
+        // at data end, limit at capacity); the sink drains position→limit, so
+        // an unflipped buffer reads back as ZERO bytes — playback sat in
+        // "buffering" forever. Media3's own TeeAudioProcessor flips after its
+        // put(); this now does too. The byte-forwarding tests were rewritten
+        // to be count-first (they had compared drained-remnant-to-drained-
+        // remnant and could pass on 0==0 bytes) and were red/green-verified:
+        // with flip() removed, 5 of 6 fail.
+        //
         // 1.17.1 (build 19) — 2026-09-25. Critical fix: build 18 played
         // silence on every track. The SpectrumTapper visualizer tap sat in the
         // player's audio-sink processor chain and only *observed* the PCM —
@@ -226,8 +237,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 19
-        versionName = "1.17.1"
+        versionCode = 20
+        versionName = "1.17.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true
