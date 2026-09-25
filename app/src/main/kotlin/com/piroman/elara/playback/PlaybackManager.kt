@@ -22,6 +22,8 @@ import com.piroman.elara.data.model.SafeGson
 import com.piroman.elara.data.stats.ListeningStatsManager
 import com.piroman.elara.data.model.Track
 import com.piroman.elara.data.model.listTypeOf
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -107,7 +109,30 @@ class PlaybackManager private constructor(context: Context) {
 
     private val appContext = context.applicationContext
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    /**
+     * Last line of defence against "the app suddenly stops". Every fallible
+     * `scope.launch` body must still guard its own work (see [playAt]); this
+     * handler covers anything that slips through — a tick in the position
+     * ticker, a sleep-timer fade, an autoplay append — so an unexpected
+     * exception degrades into a log line instead of killing the process.
+     *
+     * Without it, any uncaught exception inside a `Dispatchers.Main` coroutine
+     * crashes the app exactly like an exception on the UI thread, and the user
+     * sees a silent vanish. `PlaybackDiagnostics.append` is itself throw-safe
+     * (its write runs in `runCatching`), so the handler cannot become a new
+     * crash site.
+     */
+    private val scope = CoroutineScope(
+        SupervisorJob() +
+            CoroutineExceptionHandler { _, throwable ->
+                Log.e(TAG, "Unhandled playback coroutine failure", throwable)
+                PlaybackDiagnostics.append(
+                    appContext,
+                    "CRASH_GUARD ${throwable.javaClass.simpleName}: ${throwable.message}"
+                )
+            } +
+            Dispatchers.Main
+    )
 
     private val prefs = appContext.getSharedPreferences("aurasonic_prefs", Context.MODE_PRIVATE)
     private val gson = SafeGson.instance
@@ -547,58 +572,86 @@ class PlaybackManager private constructor(context: Context) {
         val generation = ++playGeneration
         scope.launch {
             _playbackError.value = null
+            // The whole resolve chain is guarded because every step can throw
+            // raw RuntimeExceptions, and before this guard one did exactly
+            // what users report as "the app suddenly stops": an uncaught
+            // exception inside a main-dispatcher coroutine crashes the process.
+            // The resolvers are lambdas owned by MainViewModel (network
+            // libraries are the usual offenders), but so is the ExoPlayer tail —
+            // `setMediaItem`/`prepare` have thrown IllegalStateException on a
+            // player released mid-transition. Any of them failing is a
+            // *playback* problem, so it becomes a [playbackError] the UI
+            // already knows how to show, plus a diagnostics line, never a
+            // crash. Cancellation is rethrown: swallowing it would break
+            // structured concurrency for the scope's other jobs.
+            try {
+                // Priority: downloaded file → cached remote URL → fresh resolve.
+                // The local check runs first so downloads always win offline,
+                // even when a (now unusable) remote URL is cached.
+                //
+                // Both halves are dispatched to IO because both touch the disk or
+                // the network: the local check stats a file
+                // (`DownloadManager.localPath` ends in `File.exists()`), and the
+                // JioSaavn resolver AES-decrypts the stream URL in-process. This
+                // coroutine is scoped to `Dispatchers.Main`, so without the hop that
+                // was a `stat()` — and an in-process decrypt — on the UI thread on
+                // every single track change.
+                val localUrl = withContext(Dispatchers.IO) { localSourceResolver?.invoke(track) }
+                lastUrlWasLocal = localUrl != null
+                val url = localUrl
+                    ?: resolvedUrls[track.id]
+                    ?: withContext(Dispatchers.IO) { streamResolver?.invoke(track) }
+                        ?.also { resolvedUrls[track.id] = it }
+                    ?: track.audioUrl
 
-            // Priority: downloaded file → cached remote URL → fresh resolve.
-            // The local check runs first so downloads always win offline,
-            // even when a (now unusable) remote URL is cached.
-            //
-            // Both halves are dispatched to IO because both touch the disk or
-            // the network: the local check stats a file
-            // (`DownloadManager.localPath` ends in `File.exists()`), and the
-            // JioSaavn resolver AES-decrypts the stream URL in-process. This
-            // coroutine is scoped to `Dispatchers.Main`, so without the hop that
-            // was a `stat()` — and an in-process decrypt — on the UI thread on
-            // every single track change.
-            val localUrl = withContext(Dispatchers.IO) { localSourceResolver?.invoke(track) }
-            lastUrlWasLocal = localUrl != null
-            val url = localUrl
-                ?: resolvedUrls[track.id]
-                ?: withContext(Dispatchers.IO) { streamResolver?.invoke(track) }
-                    ?.also { resolvedUrls[track.id] = it }
-                ?: track.audioUrl
+                // User moved on before resolution finished — skip this start.
+                if (generation != playGeneration) return@launch
 
-            // User moved on before resolution finished — skip this start.
-            if (generation != playGeneration) return@launch
+                if (url.isBlank()) {
+                    val msg = "Can't play \"${track.title}\" — download it or connect to the internet."
+                    _playbackError.value = msg
+                    Log.e(TAG, msg)
+                    appendDiagnostic("NO_SOURCE id=${track.id} local=${localUrl != null} offline?")
+                    return@launch
+                }
 
-            if (url.isBlank()) {
-                val msg = "Can't play \"${track.title}\" — download it or connect to the internet."
-                _playbackError.value = msg
-                Log.e(TAG, msg)
-                appendDiagnostic("NO_SOURCE id=${track.id} local=${localUrl != null} offline?")
-                return@launch
-            }
+                val mediaItem = MediaItem.Builder()
+                    .setUri(Uri.parse(url))
+                    .setMediaId(track.id)
+                    .setMediaMetadata(
+                        MediaMetadata.Builder()
+                            .setTitle(track.title)
+                            .setArtist(track.artist)
+                            .setAlbumTitle(track.album)
+                            .setArtworkUri(
+                                track.albumArt.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+                            )
+                            .build()
+                    )
+                    .build()
 
-            val mediaItem = MediaItem.Builder()
-                .setUri(Uri.parse(url))
-                .setMediaId(track.id)
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(track.title)
-                        .setArtist(track.artist)
-                        .setAlbumTitle(track.album)
-                        .setArtworkUri(
-                            track.albumArt.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
-                        )
-                        .build()
+                exoPlayer.setMediaItem(mediaItem)
+                exoPlayer.prepare()
+                // Seek before play(): ExoPlayer keeps the position across prepare,
+                // so the track starts at the resume point rather than the intro.
+                if (start > 0) exoPlayer.seekTo(start)
+                exoPlayer.play()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "playAt: starting \"${track.title}\" failed", e)
+                appendDiagnostic(
+                    "RESOLVE_FAIL id=${track.id} ${e.javaClass.simpleName}: ${e.message}"
                 )
-                .build()
-
-            exoPlayer.setMediaItem(mediaItem)
-            exoPlayer.prepare()
-            // Seek before play(): ExoPlayer keeps the position across prepare,
-            // so the track starts at the resume point rather than the intro.
-            if (start > 0) exoPlayer.seekTo(start)
-            exoPlayer.play()
+                // A superseded generation's failure is stale news — the user has
+                // already picked something else, and its own playAt owns the
+                // error surface now.
+                if (generation == playGeneration) {
+                    _isPlaying.value = false
+                    _playbackError.value =
+                        "Couldn't play \"${track.title}\" — ${e.message ?: "please try again"}."
+                }
+            }
         }
     }
 

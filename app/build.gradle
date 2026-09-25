@@ -126,6 +126,20 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.16 (build 17) — 2026-09-25. "The app suddenly stops" hardening: a
+        // static audit of every coroutine and callback found exactly one real
+        // crash path — PlaybackManager.playAt's resolve chain ran unguarded in
+        // a main-dispatcher coroutine, so a throwing resolver (or a released
+        // player in setMediaItem/prepare) killed the process mid-tap. It now
+        // degrades into the friendly playback-error banner plus a
+        // RESOLVE_FAIL line in the diagnostics log. Two belt-and-braces guards
+        // join it: a CoroutineExceptionHandler on the playback scope (any
+        // future leak degrades to a CRASH_GUARD diagnostics line, not a
+        // vanish) and an outer runCatching around refreshTrending, whose
+        // cache-paint + flow-write glue was unguarded between its guarded
+        // fetches. Every other launch site, persist path, downloader and
+        // collector was verified already guarded — no behaviour changed there.
+        //
         // 1.15 (build 16) — 2026-09-24. Home speaks the one visual language a
         // music app is expected to speak. Section headings grow a small
         // equalizer while sound is on (draw-phase only, frozen when the user
@@ -184,8 +198,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 16
-        versionName = "1.15"
+        versionCode = 17
+        versionName = "1.16"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true

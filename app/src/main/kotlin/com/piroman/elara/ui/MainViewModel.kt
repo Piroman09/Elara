@@ -733,38 +733,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * today's tracks, not last week's.
      */
     fun refreshTrending() {
+        // The body is deliberately in its own suspend function so the launch
+        // site can be a bare `runCatching` — an escape here must only cancel the
+        // refresh, never crash the process. The crash path is real: this runs
+        // on every Music Source change and every cold start, and the cache
+        // reads / flow writes between the guarded fetches were previously
+        // unguarded — a single throw inside a `viewModelScope` coroutine is an
+        // uncaught exception that takes the app down (users report this as
+        // "the app suddenly stops"). Fetch errors themselves stay guarded
+        // inside, so this outer net only catches what used to crash.
         viewModelScope.launch {
-            // Cold start paints the cache *before* the fetch, so the row is
-            // never empty while the network works. Only an empty state is
-            // painted — a mid-session refresh must never regress fresh rows to
-            // yesterday's list. What wins once the fetch returns is
-            // TrendingCachePolicy's decision below, not this placeholder.
-            if (_trendingTracks.value.isEmpty()) {
-                trendingCache.getCachedTracksAnyAge()?.takeIf { it.isNotEmpty() }?.let {
-                    _trendingTracks.value = it
-                }
-            }
-            Log.d("MainViewModel", "Refreshing trending tracks")
-            _isConnecting.value = true
-            val fetched = runCatching {
-                repository.getTrendingBySource(sourcePreferences.setting.value)
-            }.getOrElse {
-                Log.e("MainViewModel", "trending failed: ${it.message}")
-                emptyList()
-            }
-            when (val outcome = TrendingCachePolicy.resolve(fetched, trendingCache.getCachedTracksAnyAge())) {
-                is TrendingCachePolicy.Outcome.Fetched -> {
-                    _trendingTracks.value = outcome.tracks
-                    withContext(Dispatchers.IO) { trendingCache.saveDailyTracks(outcome.tracks) }
-                }
-                is TrendingCachePolicy.Outcome.Stale -> {
-                    Log.w("MainViewModel", "trending fetch empty — serving ${outcome.tracks.size} cached tracks")
-                    _trendingTracks.value = outcome.tracks
-                }
-                TrendingCachePolicy.Outcome.None -> Unit
-            }
-            _isConnecting.value = false
+            runCatching { fetchTrendingNow() }
+                .onFailure { Log.e("MainViewModel", "trending refresh crashed: ${it.message}") }
         }
+    }
+
+    private suspend fun fetchTrendingNow() {
+        // Cold start paints the cache *before* the fetch, so the row is
+        // never empty while the network works. Only an empty state is
+        // painted — a mid-session refresh must never regress fresh rows to
+        // yesterday's list. What wins once the fetch returns is
+        // TrendingCachePolicy's decision below, not this placeholder.
+        if (_trendingTracks.value.isEmpty()) {
+            trendingCache.getCachedTracksAnyAge()?.takeIf { it.isNotEmpty() }?.let {
+                _trendingTracks.value = it
+            }
+        }
+        Log.d("MainViewModel", "Refreshing trending tracks")
+        _isConnecting.value = true
+        val fetched = runCatching {
+            repository.getTrendingBySource(sourcePreferences.setting.value)
+        }.getOrElse {
+            Log.e("MainViewModel", "trending failed: ${it.message}")
+            emptyList()
+        }
+        when (val outcome = TrendingCachePolicy.resolve(fetched, trendingCache.getCachedTracksAnyAge())) {
+            is TrendingCachePolicy.Outcome.Fetched -> {
+                _trendingTracks.value = outcome.tracks
+                withContext(Dispatchers.IO) { trendingCache.saveDailyTracks(outcome.tracks) }
+            }
+            is TrendingCachePolicy.Outcome.Stale -> {
+                Log.w("MainViewModel", "trending fetch empty — serving ${outcome.tracks.size} cached tracks")
+                _trendingTracks.value = outcome.tracks
+            }
+            TrendingCachePolicy.Outcome.None -> Unit
+        }
+        _isConnecting.value = false
     }
 
     fun setPlayerExpanded(expanded: Boolean) {
