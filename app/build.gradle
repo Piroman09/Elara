@@ -126,6 +126,17 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.17.1 (build 19) — 2026-09-25. Critical fix: build 18 played
+        // silence on every track. The SpectrumTapper visualizer tap sat in the
+        // player's audio-sink processor chain and only *observed* the PCM —
+        // but a BaseAudioProcessor owns the speaker's data path, and whatever
+        // it fails to forward never reaches the sink. queueInput now forwards
+        // the buffer byte-exactly in every path and analyses a read-only
+        // duplicate alongside it; analysis also disables itself when the sink
+        // negotiates a non-16-bit encoding, where the band math would read
+        // noise. (No visualiser code runs until the full-screen player opens,
+        // which is why the silence shipped unnoticed by compile-time checks.)
+        //
         // 1.17 (build 18) — 2026-09-25. Three features land together:
         //
         //  1. Live visualizer — a SpectrumTapper rides the player's audio sink
@@ -215,8 +226,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 18
-        versionName = "1.17"
+        versionCode = 19
+        versionName = "1.17.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true

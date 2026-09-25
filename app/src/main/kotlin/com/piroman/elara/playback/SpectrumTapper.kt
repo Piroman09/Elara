@@ -27,6 +27,12 @@ import java.util.concurrent.atomic.AtomicReference
  *     that the UI polls once per frame. The UI is never blocked and the
  *     playback thread does no locking — just one atomic set per publish.
  *
+ * **The processor's first duty is the audio itself.** A [BaseAudioProcessor]
+ * owns what reaches the speaker: [queueInput] must forward the buffer into
+ * the output, always — analysis is a passenger on that ride, never a
+ * replacement for it. Build 18 shipped a version that only observed, and the
+ * result was silence on every track.
+ *
  * PCM format note: queueInput delivers 16-bit little-endian interleaved
  * samples. Stride sampling every Nth frame is fine for visuals — we need
  * loudness, not fidelity — so no per-channel deinterleaving. The published
@@ -50,29 +56,50 @@ class SpectrumTapper : BaseAudioProcessor() {
     private val ring = FloatArray(RING_SIZE)
     private var ringPos = 0
 
+    /** False when the sink negotiated a non-16-bit encoding (see [onConfigure]). */
+    private var analyse = true
+
     /** PCM frames accumulated since the last publish (counts real frames). */
     private var pcmFrames = 0
 
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
+        // Analysis assumes 16-bit little-endian frames (getShort below). The
+        // sink may negotiate float or 32-bit output depending on the device —
+        // on those the audio is still forwarded untouched below, but the
+        // band math would read noise, so analysis is switched off instead.
+        analyse = inputAudioFormat.encoding == androidx.media3.common.C.ENCODING_PCM_16BIT
         // Pass audio through unchanged; we only observe it.
         return inputAudioFormat
     }
 
     override fun queueInput(inputBuffer: ByteBuffer) {
-        if (!active.get()) {
-            // Zero-copy drain — must still consume the buffer or audio stalls.
-            inputBuffer.position(inputBuffer.limit())
+        val remaining = inputBuffer.remaining()
+        if (remaining == 0) return
+
+        // **The speaker's data path comes first.** A BaseAudioProcessor owns
+        // the audio: whatever it does not write into the output buffer never
+        // reaches the sink — which is exactly the silence build 18 shipped
+        // (the first version of this method only observed the input and
+        // never forwarded it). Forwarding is unconditional and byte-exact.
+        if (!active.get() || !analyse) {
+            replaceOutputBuffer(remaining).put(inputBuffer)
             return
         }
+
+        // Analyze a read-only duplicate while the real buffer is forwarded.
+        // duplicate() shares the bytes but keeps an independent cursor, so
+        // the put() below consuming `inputBuffer` does not disturb it.
         inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
-        val start = inputBuffer.position()
-        val end = inputBuffer.limit()
+        val view = inputBuffer.duplicate()
+        replaceOutputBuffer(remaining).put(inputBuffer)
+
         var sumSquares = 0.0
         var taken = 0
-        var i = start
+        var i = view.position()
+        val end = view.limit()
         // 16-bit samples every [STRIDE] frames; stride-skip both channels.
         while (i + 1 < end) {
-            val sample = inputBuffer.getShort(i) / 32768f
+            val sample = view.getShort(i) / 32768f
             sumSquares += sample.toDouble() * sample
             ring[ringPos] = sample
             ringPos = (ringPos + 1) % RING_SIZE
@@ -87,7 +114,6 @@ class SpectrumTapper : BaseAudioProcessor() {
             val rms = if (taken > 0) Math.sqrt(sumSquares / taken).toFloat() else 0f
             publishBands(rms)
         }
-        inputBuffer.position(inputBuffer.limit())
     }
 
     override fun onFlush() {
