@@ -190,25 +190,41 @@ data class JioWebapiPlaylistResponse(
     val tracks: List<JioSong> get() = songs.ifEmpty { fullSongs }
 }
 
-/** `webapi.get?type=album` — songs live under `songs`, and [title] is the album name. */
+/**
+ * `webapi.get?type=album` — [title] is the album name; the songs arrive under
+ * whichever key — and in whichever shape — the server is using this month.
+ *
+ * Two shapes have been observed live:
+ *
+ *  - **Nested under `list`** (verified 2026-09-25, the shape playlists use):
+ *    `songs` is gone entirely and each entry is a [JioSong] with the media
+ *    fields inside `more_info`.
+ *  - **Flat under `songs`** (verified 2026-09-21): each entry carries
+ *    `encrypted_media_url`, `duration` etc. as top-level fields ([JioAlbumSong]).
+ *
+ * The rename is the same move the playlist endpoint pulled with
+ * `fullsongs` → `list`, and it fails the same silent way: an unmapped key
+ * parses as an empty list, the caller converts that to null, and every album
+ * on Home opens to "Couldn't load this playlist." Mapping both keys is cheap;
+ * the nested list wins when present because it is the current shape.
+ */
 data class JioWebapiAlbumResponse(
     val title: String? = null,
-    val songs: List<JioAlbumSong> = emptyList(),
+    @SerializedName("list") val songsNested: List<JioSong> = emptyList(),
+    @SerializedName("songs") val songsFlat: List<JioAlbumSong> = emptyList(),
     @SerializedName("list_count") val listCount: Int = 0
 )
 
 /**
- * A song inside an album.
+ * A song inside an album, **legacy flat shape** — see [JioWebapiAlbumResponse]
+ * for why both shapes are parsed.
  *
- * **This is a different shape from [JioSong], not a variant of it**, and the
- * difference is silent rather than loud. Album songs carry no `more_info` object
- * at all — the media URL, duration and bitrate are flat top-level fields — and
- * the title is in `song`, not `title`. Feeding these through [JioSong] therefore
- * yields a null `moreInfo`, and `jioSongToTrack` drops every one of them on its
- * first guard, so an album would open to an empty list with no error anywhere.
- *
- * Verified live 2026-09-21: 6/6 songs of the "Vibe" album carry a top-level
- * `encrypted_media_url`.
+ * This is a different shape from [JioSong], not a variant of it, and the
+ * difference is silent rather than loud. Album songs carried no `more_info`
+ * object at all — the media URL, duration and bitrate were flat top-level
+ * fields — and the title was in `song`, not `title`. Verified live 2026-09-21
+ * (6/6 songs of the "Vibe" album); no longer observed since the 2026-09-25
+ * rename to the nested `list` shape, kept as the fallback.
  */
 data class JioAlbumSong(
     val id: String = "",

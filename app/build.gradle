@@ -126,6 +126,18 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.17.4 (build 22) — 2026-09-25. Album tiles on Home opened to
+        // "Couldn't load this playlist" again: JioSaavn renamed the album
+        // response's song key `songs` → `list` AND flattened → nested in the
+        // same move (the same rename the playlist endpoint pulled with
+        // `fullsongs`). Verified live: the new shape is byte-compatible with
+        // the playlist entry shape, so album entries now flow through the
+        // playlist mapper, with the legacy flat shape kept as fallback. The
+        // both-shapes contract is pinned by tests against fixtures captured
+        // from the live API. This is the second silent-shape rename from this
+        // host — the model now tolerates both keys the way the playlist
+        // response already did.
+        //
         // 1.17.3 (build 21) — 2026-09-25. Library layout by request: the
         // lifetime "10 hours 14 minutes listened" snapshot card is gone;
         // Wrapped is the only stats card above Playlists. The stats screen
@@ -243,8 +255,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 21
-        versionName = "1.17.3"
+        versionCode = 22
+        versionName = "1.17.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true

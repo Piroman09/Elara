@@ -420,7 +420,13 @@ class MusicRepository(
             }
             BrowseTile.Kind.ALBUM -> {
                 val resp = jioSaavn.getAlbumByToken(token = tile.token)
-                (resp.title ?: tile.title) to resp.songs.mapNotNull { albumSongToTrack(it) }
+                // Two live shapes, see [JioWebapiAlbumResponse]: the nested
+                // `list` entries (current) go through the same mapper as
+                // playlist songs; the flat legacy `songs` entries keep their
+                // own mapper. Either alone is enough to open the album.
+                val tracks = resp.songsNested.mapNotNull { jioSongToTrack(it) }
+                    .ifEmpty { resp.songsFlat.mapNotNull { albumSongToTrack(it) } }
+                (resp.title ?: tile.title) to tracks
             }
         }
         if (tracks.isEmpty()) null
