@@ -212,6 +212,18 @@ fun PlayerSettingsScreen(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
+                // The maker's mark: one step below the version line in an even
+                // smaller size, so it reads as a quiet signature rather than a
+                // feature of the screen.
+                Text(
+                    text = "made with ❤️ by piroman",
+                    color = AuraTextTertiary,
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp)
+                )
             }
         }
     }
