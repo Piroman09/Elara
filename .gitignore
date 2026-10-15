@@ -32,6 +32,20 @@ build_fixed/
 .env
 node_modules/
 
+# Local scratch / scraped API dumps (not source; some carry short-lived tokens)
+signup.json
+t.json
+charts.json
+assets.txt
+mp3url.txt
+sc.html
+sc_search.json
+piped_search.json
+piped_streams.json
+jio.json
+web.json
+innertube.json
+
 # Log/OS Files
 *.log
 
