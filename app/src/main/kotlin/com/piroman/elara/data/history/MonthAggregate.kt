@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import java.time.YearMonth
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One calendar month of listening, for the Wrapped recap screen.
@@ -47,17 +48,15 @@ data class MonthAggregate(
 ) {
     companion object {
         /**
-         * The oldest aggregate worth keeping: a month older than this was
-         * never displayed anyway (the recap shows one month), so stale data
-         * would only bloat the prefs file.
-         */
-        const val KEEP_MONTHS = 1
-
-        /**
          * Pure rollover: returns [current] when it belongs to [nowMonth],
          * otherwise a fresh aggregate for the new month. A pure function so
          * the rollover rule — the only way Wrapped can silently lie about
          * when listening happened — is unit-testable.
+         *
+         * This is also the whole retention policy: only the current month is
+         * ever carried forward, so the recap shows one month (as designed) and
+         * the stored document cannot accumulate stale ones. There is
+         * deliberately no pruning constant to keep in step with this.
          */
         fun rollover(current: MonthAggregate?, nowMonth: String): MonthAggregate =
             if (current != null && current.month == nowMonth) current
@@ -104,6 +103,19 @@ class WrappedStatsManager private constructor(context: Context) {
         /** Cap on tracked track ids per month, mirroring [bumpCounts]. */
         private const val MAX_TRACKS = 300
 
+        /**
+         * How much listening time may accumulate before it is written to
+         * disk.
+         *
+         * The same figure, and the same reasoning, as
+         * [com.piroman.elara.data.stats.ListeningStatsManager]: the position
+         * ticker advances time every 400 ms, so persisting per call rewrote
+         * the whole prefs file ~2.5 times a second for as long as music
+         * played. This bounds both the write rate and the worst case loss on
+         * process death.
+         */
+        private const val PERSIST_INTERVAL_MS = 5_000L
+
         @Volatile private var instance: WrappedStatsManager? = null
 
         fun getInstance(context: Context): WrappedStatsManager =
@@ -128,6 +140,18 @@ class WrappedStatsManager private constructor(context: Context) {
     private val saveQueued = AtomicBoolean(false)
     @Volatile private var pendingSave: Job? = null
 
+    /**
+     * Milliseconds of listening time accumulated since the last disk write.
+     * See [addListeningTime] and [flush].
+     *
+     * An `AtomicLong` rather than the plain counter its sibling in
+     * `ListeningStatsManager` uses: there, every touch comes from the position
+     * ticker, but here [flush] is also reached from `MainActivity.onStop` and
+     * from [com.piroman.elara.playback.PlaybackManager.release], which are not
+     * that coroutine's thread.
+     */
+    private val msSincePersist = AtomicLong(0L)
+
     private val _aggregate = MutableStateFlow(
         StartupTiming.measure("WrappedStatsManager.load") { load() }
     )
@@ -143,11 +167,34 @@ class WrappedStatsManager private constructor(context: Context) {
         persist()
     }
 
-    /** Listening time advanced. Called from the position ticker, real time only. */
+    /**
+     * Listening time advanced. Called from the position ticker, real time only.
+     *
+     * The in-memory total moves on every call so the recap is live, but the
+     * **disk write is batched** every [PERSIST_INTERVAL_MS]. At most that much
+     * listening is lost to a process death — the same trade the playback
+     * position makes — and [flush] closes the window at every pause and at
+     * shutdown.
+     */
     fun addListeningTime(ms: Long) {
         if (ms <= 0) return
         val base = MonthAggregate.rollover(_aggregate.value, currentMonthKey())
         _aggregate.value = base.copy(ms = base.ms + ms)
+        if (msSincePersist.addAndGet(ms) < PERSIST_INTERVAL_MS) return
+        msSincePersist.set(0L)
+        persist()
+    }
+
+    /**
+     * Writes any pending listening time immediately.
+     *
+     * A no-op when nothing is pending, which is what lets the position ticker
+     * call it on every tick while playback is stopped without causing a write
+     * storm. Like every other write here it is handed to the save thread, so
+     * this does not block the caller on disk I/O.
+     */
+    fun flush() {
+        if (msSincePersist.getAndSet(0L) == 0L) return
         persist()
     }
 

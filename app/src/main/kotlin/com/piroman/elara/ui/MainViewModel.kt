@@ -5,8 +5,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.annotation.OptIn
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.piroman.elara.data.backup.ElaraBackup
@@ -134,7 +136,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * *our* playback instead of opening unscoped. ExoPlayer reports 0 until the
      * audio sink is initialised, so callers must check for a positive value
      * before passing it to [android.media.audiofx.AudioEffect].
+     *
+     * `ExoPlayer.getAudioSessionId()` is media3's @UnstableApi surface — the id
+     * only exists once the platform audio sink is up — so reading it opts in,
+     * narrowly on this getter rather than for the whole class.
      */
+    @get:OptIn(UnstableApi::class)
     val audioSessionId: Int get() = playbackManager.exoPlayer.audioSessionId
 
     /** Live spectrum source for the full-screen player's visualizer. */

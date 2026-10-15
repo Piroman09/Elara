@@ -1,6 +1,7 @@
 package com.piroman.elara.ui.components
 
 import android.provider.Settings
+import androidx.annotation.OptIn
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -14,6 +15,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.media3.common.util.UnstableApi
 import com.piroman.elara.playback.SpectrumAnalyzer
 import com.piroman.elara.playback.SpectrumTapper
 
@@ -51,6 +53,9 @@ fun rememberReducedMotion(): Boolean {
  * floor rather than freezing mid-air. Reduced motion draws a static
  * mid-height pattern and never starts the frame loop.
  */
+// SpectrumTapper is annotated @UnstableApi because it is built on media3's
+// BaseAudioProcessor (see that class), so consuming it opts in here.
+@OptIn(UnstableApi::class)
 @Composable
 fun LiveSpectrumBars(
     tapper: SpectrumTapper,

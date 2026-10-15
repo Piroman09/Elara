@@ -126,6 +126,87 @@ android {
         // tested) because both failure modes are silent — too eager re-fetches
         // eight rows on every app switch, too shy leaves Home a day stale.
         //
+        // 1.17.6 (build 24) — 2026-09-27. "make the app whole bug free if any
+        // bug is there even a slightest bug…fix it" — a full sweep, so this
+        // entry is what the sweep actually *found* rather than a feature list.
+        // Android Lint was run over the module for the first time and is now
+        // error-free; it had been failing with 36 errors, all of one kind.
+        //
+        // 1. Wrapped was rewriting its state to disk ~2.5 times a SECOND for
+        //    as long as music played. `WrappedStatsManager.addListeningTime` is
+        //    called from the 400 ms position ticker and persisted on every
+        //    call — a full Gson encode of the month's id map plus a synchronous
+        //    `commit()` of the entire `elara_settings` file, thousands of times
+        //    an hour, for a counter the UI reads once. Its sibling
+        //    `ListeningStatsManager` had already been fixed for exactly this and
+        //    documented the trade; Wrapped simply never got the same treatment.
+        //    It now batches on the same 5 s interval and flushes at every pause,
+        //    at `MainActivity.onStop` and at playback release, so the batching
+        //    window cannot outlive the app.
+        //
+        // 2. 36 `UnsafeOptInUsageError`s — media3's `@UnstableApi` call sites
+        //    (ForwardingPlayer/Player overrides, MediaSession.Builder,
+        //    MediaNotification.Provider, SpectrumTapper) taken without opting in.
+        //    Not a runtime fault, but it is the mechanism that makes a media3
+        //    upgrade tell you which of our classes are pinned to API that may
+        //    move under them, and it was failing the build's own gate. Each site
+        //    now opts in where the usage actually is: class-level on the two
+        //    media3 wrappers and on the notification provider, on the one
+        //    composable that consumes SpectrumTapper, method-level on the
+        //    service's `onCreate`, and `@get:` on the audio session property —
+        //    rather than blanketing whole files.
+        //
+        // 3. `MonthAggregate.KEEP_MONTHS` was declared, documented as the
+        //    retention policy, and referenced by nothing: `rollover` already
+        //    discards any month that is not the current one, so the constant
+        //    described behaviour that lived somewhere else. The retention note
+        //    now sits on `rollover`, where the rule actually is.
+        //
+        // Checked and deliberately left alone: the two `StaticFieldLeak`
+        // warnings name singletons that store `applicationContext`, not an
+        // Activity, so they are lint false positives; `ApplySharedPref` on
+        // Wrapped's `commit()` is the documented durability choice (the write is
+        // already on a background thread); and every `!!`, index, division and
+        // `runBlocking` site the sweep re-read is guarded by the code above it.
+        //
+        // 1.17.5 (build 23) — 2026-09-27. "sometimes the song suddenly stops
+        // or stops when i open another app" — one report, two causes, and both
+        // live in the gap *between* tracks rather than during one.
+        //
+        // 1. Backgrounding. media3 only lets the playback service hold a
+        //    foreground status — the thing that stops Android, and every
+        //    aggressive OEM task cleaner, from reclaiming a backgrounded player
+        //    — while the session player reports BUFFERING or READY. Verified in
+        //    the 1.4.1 bytecode: MediaNotificationManager.shouldRunInForeground
+        //    requires (playWhenReady) && state in {BUFFERING, READY}, and
+        //    MediaSessionService.isPlaybackOngoing() is that same flag. ELARA is
+        //    neither of those between tracks *by design*: the queue is a cursor
+        //    and every stream URL is resolved lazily, so the player sits at
+        //    ENDED, then IDLE, for the second or two the resolver takes. In that
+        //    window the service is an ordinary background service — and that
+        //    window opens on every track change, i.e. exactly when the user has
+        //    just switched apps. QueueAwarePlayer, the session-facing view,
+        //    now reports a track gap as BUFFERING while playWhenReady is true, so
+        //    the foreground status survives the transition. A deliberate pause
+        //    still reports the real state, so a paused app gives its foreground
+        //    status up exactly as media3 intends.
+        //
+        // 2. Silence. A track that would not start (no resolved source, or a
+        //    resolver that threw) set the error message and returned, and a
+        //    mid-track stream failure went the same way — so ONE unresolvable
+        //    song ended the whole listening session and left dead air, which is
+        //    the other half of "the song suddenly stops". Both now move on to
+        //    the next track, bounded by FailedTrackPolicy (three in a row, and
+        //    never on a single-track queue), with the budget cleared by any
+        //    track that really reaches READY and by any deliberate transport
+        //    action, so a bad run can never stop the next good song.
+        //
+        // The diagnostics log now also records *why* playback paused, from
+        // ExoPlayer's playWhenReady change reason, which separates "another app
+        // took the audio over" (correct, by design, and indistinguishable from a
+        // bug on a phone) from an actual failure. This is the first report static
+        // analysis could not settle on its own; that line is what settles it.
+        //
         // 1.17.4 (build 22) — 2026-09-25. Album tiles on Home opened to
         // "Couldn't load this playlist" again: JioSaavn renamed the album
         // response's song key `songs` → `list` AND flattened → nested in the
@@ -255,8 +336,8 @@ android {
         // ViewModel's `youTubeTrending`/`youTubeNewSongs` became
         // `youTubeTop`/`youTubeHipHop` — a field named `newSongs` holding hip-hop
         // is how the wrong branch gets taken later.
-        versionCode = 22
-        versionName = "1.17.4"
+        versionCode = 24
+        versionName = "1.17.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {            useSupportLibrary = true

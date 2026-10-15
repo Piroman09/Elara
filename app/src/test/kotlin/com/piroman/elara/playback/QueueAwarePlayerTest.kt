@@ -32,7 +32,10 @@ class QueueAwarePlayerTest {
      * (`BasePlayer` still demands a real `android.os.Looper`), so this is a
      * dynamic proxy implementing only what [QueueAwarePlayer] touches.
      */
-    private fun playerWithOneItem(): Player {
+    private fun playerWithOneItem(
+        playbackState: Int = Player.STATE_READY,
+        playWhenReady: Boolean = true
+    ): Player {
         val baseCommands = Player.Commands.Builder()
             .add(Player.COMMAND_PLAY_PAUSE)
             .add(Player.COMMAND_GET_METADATA)
@@ -45,6 +48,8 @@ class QueueAwarePlayerTest {
             when (method.name) {
                 "getAvailableCommands" -> baseCommands
                 "isCommandAvailable" -> baseCommands.contains(args!![0] as Int)
+                "getPlaybackState" -> playbackState
+                "getPlayWhenReady" -> playWhenReady
                 "seekToNext", "seekToNextMediaItem" -> { nextCalls++; null }
                 "seekToPrevious", "seekToPreviousMediaItem" -> { previousCalls++; null }
                 "toString" -> "FakePlayer(one item)"
@@ -67,8 +72,11 @@ class QueueAwarePlayerTest {
         else -> null
     }
 
-    private fun queueAwarePlayer() = QueueAwarePlayer(
-        player = playerWithOneItem(),
+    private fun queueAwarePlayer(
+        state: Int = Player.STATE_READY,
+        playWhenReady: Boolean = true
+    ) = QueueAwarePlayer(
+        player = playerWithOneItem(playbackState = state, playWhenReady = playWhenReady),
         onNext = { nextCalls++ },
         onPrevious = { previousCalls++ }
     )
@@ -119,5 +127,64 @@ class QueueAwarePlayerTest {
         player.seekToPreviousMediaItem()
         assertEquals(0, nextCalls)
         assertEquals(2, previousCalls)
+    }
+
+    // ── Foreground continuity ─────────────────────────────────────────────
+    //
+    // media3's `MediaNotificationManager.shouldRunInForeground` requires the
+    // session player to report BUFFERING or READY (plus playWhenReady); IDLE and
+    // ENDED make it drop the service's foreground status. ELARA sits in both of
+    // those states between every pair of tracks — the previous item has ended
+    // and the next URL is still resolving — which is when a backgrounded app is
+    // most likely to be reclaimed. These are the properties that stop that.
+
+    @Test
+    fun `a track gap still reports as a running session`() {
+        assertEquals(
+            Player.STATE_BUFFERING,
+            QueueAwarePlayer.sessionPlaybackState(Player.STATE_ENDED, playWhenReady = true)
+        )
+        assertEquals(
+            Player.STATE_BUFFERING,
+            QueueAwarePlayer.sessionPlaybackState(Player.STATE_IDLE, playWhenReady = true)
+        )
+    }
+
+    @Test
+    fun `a deliberate pause keeps the real state, so the service may stand down`() {
+        assertEquals(
+            Player.STATE_ENDED,
+            QueueAwarePlayer.sessionPlaybackState(Player.STATE_ENDED, playWhenReady = false)
+        )
+        assertEquals(
+            Player.STATE_IDLE,
+            QueueAwarePlayer.sessionPlaybackState(Player.STATE_IDLE, playWhenReady = false)
+        )
+    }
+
+    @Test
+    fun `playable states are never rewritten`() {
+        for (playWhenReady in listOf(true, false)) {
+            assertEquals(
+                Player.STATE_BUFFERING,
+                QueueAwarePlayer.sessionPlaybackState(Player.STATE_BUFFERING, playWhenReady)
+            )
+            assertEquals(
+                Player.STATE_READY,
+                QueueAwarePlayer.sessionPlaybackState(Player.STATE_READY, playWhenReady)
+            )
+        }
+    }
+
+    @Test
+    fun `the session-facing player reports the softened state`() {
+        assertEquals(
+            Player.STATE_BUFFERING,
+            queueAwarePlayer(state = Player.STATE_ENDED, playWhenReady = true).playbackState
+        )
+        assertEquals(
+            Player.STATE_ENDED,
+            queueAwarePlayer(state = Player.STATE_ENDED, playWhenReady = false).playbackState
+        )
     }
 }

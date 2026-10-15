@@ -16,6 +16,10 @@ captures/
 .externalNativeBuild/
 .cxx/
 
+# Python bytecode (server/)
+__pycache__/
+*.py[cod]
+
 # Stale build scratch dirs
 G_HOME/
 SAFE_BUILD/

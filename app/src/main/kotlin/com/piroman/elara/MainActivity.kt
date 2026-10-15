@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import com.piroman.elara.data.history.PlayHistoryManager
+import com.piroman.elara.data.history.WrappedStatsManager
 import com.piroman.elara.data.playlist.PlaylistManager
 import com.piroman.elara.ui.MainViewModel
 import com.piroman.elara.ui.components.MainScaffold
@@ -108,14 +109,22 @@ class MainActivity : ComponentActivity() {
      * the loss is completely silent. `PlayHistoryManager` therefore commits on
      * its own thread, and needs the same flush as the playlist file.
      *
+     * Wrapped's month total joins them for the same reason: it is *batched*
+     * while music plays (see [WrappedStatsManager.addListeningTime]), so
+     * without this the seconds since the last write would be the ones lost to
+     * a kill — and they are exactly the ones a user who just closed the app
+     * would notice missing from this month's recap.
+     *
      * Android solves the identical problem for `apply()` by blocking the main
      * thread in `ActivityThread.handleStopActivity`; this is the same trade, for
-     * our own writes.
+     * our own writes. Only the playlist file actually blocks — the other two
+     * hand their write to a background thread.
      */
     override fun onStop() {
         super.onStop()
         PlaylistManager.getInstance(this).flushPendingSave()
         PlayHistoryManager.getInstance(this).flushPending()
+        WrappedStatsManager.getInstance(this).flush()
     }
 
     /**

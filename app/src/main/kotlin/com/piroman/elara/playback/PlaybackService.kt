@@ -1,7 +1,9 @@
 package com.piroman.elara.playback
 
 import android.content.Intent
+import androidx.annotation.OptIn
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionResult
@@ -59,6 +61,10 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    // MediaSession.Builder (and MediaNotification.Provider, below) are media3's
+    // @UnstableApi surface, acknowledged here rather than class-wide because
+    // nothing else on this service touches it.
+    @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
         val manager = PlaybackManager.getInstance(this)

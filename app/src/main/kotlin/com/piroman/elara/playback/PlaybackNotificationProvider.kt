@@ -9,10 +9,12 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
@@ -31,6 +33,10 @@ import kotlinx.coroutines.launch
  * OEM ROMs suppress the default notification, so we render our own with album
  * art, play/pause, prev/next and the compat media style (seekbar on 13+).
  */
+// MediaNotification.Provider and its Callback / ActionFactory types are media3's
+// @UnstableApi surface, so the opt-in is acknowledged once for the class — the
+// same way PlaybackManager does it.
+@OptIn(UnstableApi::class)
 class PlaybackNotificationProvider(private val context: Context) : MediaNotification.Provider {
 
     companion object {

@@ -102,6 +102,13 @@ class PlaybackManager private constructor(context: Context) {
          */
         private const val CROSSFADE_STEP_MS = 50L
 
+        /**
+         * How long to wait before skipping a track that would not play. Short
+         * enough to feel automatic, long enough that a momentary failure is not
+         * answered with an instant jump.
+         */
+        private const val FAILED_TRACK_SKIP_DELAY_MS = 600L
+
         @Volatile private var instance: PlaybackManager? = null
 
         fun getInstance(context: Context): PlaybackManager =
@@ -361,16 +368,46 @@ class PlaybackManager private constructor(context: Context) {
     private var lastUrlWasLocal = false
     private val autoHealedIds = mutableSetOf<String>()
 
+    /**
+     * Tracks that failed to start, back to back, for [skipFailedTrack]'s budget.
+     * Reset by any track reaching `STATE_READY` and by deliberate transport.
+     */
+    private var consecutiveStartFailures = 0
+
     init {
         exoPlayer.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _isPlaying.value = isPlaying
             }
 
+            /**
+             * Records *why* playback stopped.
+             *
+             * The position ticker proves that a pause happened (the position
+             * stops climbing) but never who caused it, and the reasons read very
+             * differently to a user chasing a bug. The one that matters most is
+             * [Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS]: another
+             * app (a game, a video, a voice note) taking the audio over makes
+             * ExoPlayer pause *by design*, which on a phone is reported exactly
+             * like a fault — "the song stops when I open another app". Without
+             * this line there is nothing in the diagnostics log that tells a
+             * correct pause apart from a failure. Only stops are logged; a
+             * resume has nothing to explain.
+             */
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (playWhenReady) return
+                appendDiagnostic(
+                    "PAUSED ${pauseReasonName(reason)} id=${exoPlayer.currentMediaItem?.mediaId}"
+                )
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     val d = exoPlayer.duration
                     if (d > 0) _durationMs.value = d
+                    // A track that reached READY really did play, so the run of
+                    // failures [skipFailedTrack] counts is over.
+                    consecutiveStartFailures = 0
                 }
                 if (playbackState == Player.STATE_ENDED) {
                     onTrackFinished()
@@ -412,6 +449,15 @@ class PlaybackManager private constructor(context: Context) {
                 ) {
                     appendDiagnostic("SELF_HEAL retry from network id=$currentId")
                     onDownloadMissing?.invoke(playing)
+                } else if (exoPlayer.playWhenReady) {
+                    // Not a missing local file but the stream itself gave up
+                    // mid-track. Left alone this is permanent dead air that only
+                    // the user can clear — reported as "the song suddenly
+                    // stops". They did not pause, so silence is never what they
+                    // asked for: move on. Guarded on `playWhenReady` because an
+                    // error can surface on a paused player, and starting a new
+                    // track then would be exactly the bug this is fixing.
+                    skipFailedTrack(playing, playGeneration, "PLAYER_ERROR ${error.errorCodeName}")
                 }
             }
         })
@@ -451,10 +497,11 @@ class PlaybackManager private constructor(context: Context) {
                     }
                 } else {
                     // Playback stopped (pause, sleep timer, end of queue). Flush
-                    // the listening total that addTime batched — this one hook
-                    // covers every pause path, and flush() is a no-op once there
-                    // is nothing pending, so it does not write on every tick.
+                    // the listening totals that addTime batched — this one hook
+                    // covers every pause path, and each flush is a no-op once
+                    // nothing is pending, so it does not write on every tick.
                     statsManager.flush()
+                    wrappedStats?.flush()
                 }
                 delay(400)
             }
@@ -535,6 +582,7 @@ class PlaybackManager private constructor(context: Context) {
     fun setQueue(tracks: List<Track>, startIndex: Int) {
         if (tracks.isEmpty()) return
         autoHealedIds.clear()
+        resetFailureBudget()
         _queue.value = tracks
         rebuildShuffleOrder(startIndex.coerceIn(0, tracks.lastIndex))
         playAt(startIndex.coerceIn(0, tracks.lastIndex))
@@ -554,6 +602,7 @@ class PlaybackManager private constructor(context: Context) {
     /** Jump to a specific queue position without disturbing the rest of it. */
     fun jumpTo(index: Int) {
         if (index !in _queue.value.indices) return
+        resetFailureBudget()
         if (index == _queueIndex.value) {
             if (!exoPlayer.isPlaying) togglePlay()
             return
@@ -647,6 +696,7 @@ class PlaybackManager private constructor(context: Context) {
                     _playbackError.value = msg
                     Log.e(TAG, msg)
                     appendDiagnostic("NO_SOURCE id=${track.id} local=${localUrl != null} offline?")
+                    skipFailedTrack(track, generation, "NO_SOURCE")
                     return@launch
                 }
 
@@ -689,9 +739,57 @@ class PlaybackManager private constructor(context: Context) {
                     _isPlaying.value = false
                     _playbackError.value =
                         "Couldn't play \"${track.title}\" — ${e.message ?: "please try again"}."
+                    skipFailedTrack(track, generation, "RESOLVE_FAIL")
                 }
             }
         }
+    }
+
+    /**
+     * Moves on to the next track after [track] would not play, within a budget.
+     *
+     * One unplayable track used to end the whole listening session: the resolve
+     * chain set the error and returned, so an album stopped dead at the first
+     * song whose stream could not be resolved, and a mid-track network failure
+     * left silence until the user tapped something. Skipping is what every
+     * streaming app does instead, and it is the difference between "one bad
+     * song" and "the app keeps stopping".
+     *
+     * Deliberately bounded: [FailedTrackPolicy] decides how many in a row are
+     * worth trying. The budget is cleared by a track actually reaching
+     * `STATE_READY`, and by any deliberate transport action ([playNext],
+     * [playPrevious], [jumpTo], [setQueue]) — a bad run must never stop the one
+     * good track the user picks next.
+     *
+     * @param generation the [playGeneration] this failure belongs to. A
+     *   superseded attempt must not move the queue: the user has already chosen
+     *   something else, and this failure is stale news.
+     */
+    private fun skipFailedTrack(track: Track?, generation: Int, reason: String) {
+        if (generation != playGeneration) return
+        consecutiveStartFailures++
+        if (!FailedTrackPolicy.shouldSkip(consecutiveStartFailures, _queue.value.size)) {
+            appendDiagnostic(
+                "SKIP_GIVE_UP after $consecutiveStartFailures failures id=${track?.id}"
+            )
+            return
+        }
+        appendDiagnostic("SKIP_FAILED id=${track?.id} $reason")
+        scope.launch {
+            // A beat, so a momentary failure has room to have been momentary,
+            // and a run of them cannot become a tight loop.
+            delay(FAILED_TRACK_SKIP_DELAY_MS)
+            // Re-check: the user may have picked a track while we waited.
+            if (generation == playGeneration) advanceToNext()
+        }
+    }
+
+    /**
+     * Clears the auto-skip budget, because the user asked for a track
+     * deliberately. See [skipFailedTrack] for what consumes it.
+     */
+    private fun resetFailureBudget() {
+        consecutiveStartFailures = 0
     }
 
     private fun onTrackFinished() {
@@ -705,6 +803,16 @@ class PlaybackManager private constructor(context: Context) {
     }
 
     fun playNext() {
+        // A Next is a fresh request — a button press, the end of a track, a
+        // notification action — so whatever happened to the last track says
+        // nothing about this one. `advanceToNext` is the same move without the
+        // reset, which is what [skipFailedTrack] needs.
+        resetFailureBudget()
+        advanceToNext()
+    }
+
+    /** The cursor move behind [playNext], without the failure-budget reset. */
+    private fun advanceToNext() {
         val tracks = _queue.value
         if (tracks.isEmpty()) return
         val idx = _queueIndex.value
@@ -783,6 +891,7 @@ class PlaybackManager private constructor(context: Context) {
     }
 
     fun playPrevious() {
+        resetFailureBudget()
         if (exoPlayer.currentPosition > 3000) {
             restartCurrentTrack()
             return
@@ -1037,6 +1146,7 @@ class PlaybackManager private constructor(context: Context) {
                 if (idx >= 0) {
                     val resumeAt = restoredPositionMs
                     restoredPositionMs = 0
+                    resetFailureBudget()
                     playAt(idx, resumeAt)
                     return
                 }
@@ -1108,9 +1218,10 @@ class PlaybackManager private constructor(context: Context) {
         autoplayJob = null
         // Last chance to record where we were before the process goes away.
         persistPosition(exoPlayer.currentPosition.coerceAtLeast(0))
-        // Same for the listening total, which is batched — the ticker that
-        // normally flushes it is about to be torn down with the player.
+        // Same for both listening totals, which are batched — the ticker that
+        // normally flushes them is about to be torn down with the player.
         statsManager.flush()
+        wrappedStats?.flush()
         exoPlayer.release()
     }
 
@@ -1281,5 +1392,25 @@ class PlaybackManager private constructor(context: Context) {
      */
     private fun appendDiagnostic(line: String) {
         PlaybackDiagnostics.append(appContext, line)
+    }
+
+    /**
+     * Readable name for a `Player.PLAY_WHEN_READY_CHANGE_REASON_*`, for the
+     * diagnostics log written by the `onPlayWhenReadyChanged` listener.
+     *
+     * Every cause is worth distinguishing: `USER_REQUEST` is one of ours (the
+     * pause button, the sleep timer), `AUDIO_FOCUS_LOSS` is another app taking
+     * the audio over, `AUDIO_BECOMING_NOISY` is headphones coming out. To a user
+     * they are all "the song stopped", and only the log can separate a correct
+     * pause from a fault.
+     */
+    private fun pauseReasonName(reason: Int): String = when (reason) {
+        Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST -> "USER_REQUEST"
+        Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS -> "AUDIO_FOCUS_LOSS"
+        Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY -> "AUDIO_BECOMING_NOISY"
+        Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE -> "REMOTE"
+        Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM -> "END_OF_MEDIA_ITEM"
+        Player.PLAY_WHEN_READY_CHANGE_REASON_SUPPRESSED_TOO_LONG -> "SUPPRESSED_TOO_LONG"
+        else -> "reason=$reason"
     }
 }
