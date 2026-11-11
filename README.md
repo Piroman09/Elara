@@ -2,12 +2,16 @@
 
 > **Your music, in orbit.** A cosmic-themed music streaming platform with a spatial "Vibe Galaxy", ambient mixing, a full web player, and a native Android app — powered by YouTube Music.
 
+> [!NOTE]
+> **ELARA is purely vibe-coded** 🎛️ — built end-to-end on vibes, prompts, and AI flow. No hand-written specs, no design docs, just code that *felt* right.
+
 <p align="center">
   <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white" alt="React 18"/>
   <img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript"/>
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI"/>
   <img src="https://img.shields.io/badge/Kotlin-Compose-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin Compose"/>
   <img src="https://img.shields.io/badge/Tailwind-3-38BDF8?logo=tailwindcss&logoColor=white" alt="Tailwind CSS"/>
+  <img src="https://img.shields.io/badge/Vibe--Coded-100%25-purple" alt="Vibe-coded"/>
 </p>
 
 ---
