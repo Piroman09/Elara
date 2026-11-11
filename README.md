@@ -7,7 +7,6 @@
   <img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript"/>
   <img src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI"/>
   <img src="https://img.shields.io/badge/Kotlin-Compose-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin Compose"/>
-  <img src="https://img.shields.io/badge/Supabase-Auth-3FCF8E?logo=supabase&logoColor=white" alt="Supabase"/>
   <img src="https://img.shields.io/badge/Tailwind-3-38BDF8?logo=tailwindcss&logoColor=white" alt="Tailwind CSS"/>
 </p>
 
@@ -66,9 +65,6 @@ The repository contains **three parts**:
 - **Live spectrum bars**, floating & fullscreen players, queue drawer
 - **Listening stats, Wrapped screen, playback diagnostics, and backup**
 
-### 🔐 Authentication
-- Sign in with **Google OAuth via Supabase**
-
 ---
 
 ## 🏗️ Architecture
@@ -78,12 +74,12 @@ The repository contains **three parts**:
 │   Web App    │─────▶│  FastAPI API  │─────▶│ YouTube     │
 │  React+Vite  │      │  (port 8000)  │      │ Music Engine│
 └──────────────┘      └───────────────┘      └─────────────┘
-       │                    │
-       ▼                    ▼
-┌──────────────┐      ┌───────────────┐
-│   Supabase   │      │    yt-dlp     │
-│  Auth (GOA)  │      │ audio streams │
-└──────────────┘      └───────────────┘
+                              │
+                              ▼
+                      ┌───────────────┐
+                      │    yt-dlp     │
+                      │ audio streams │
+                      └───────────────┘
 ```
 
 ### API Endpoints
@@ -106,22 +102,8 @@ The repository contains **three parts**:
 ### Prerequisites
 - **Node.js** 18+ and npm
 - **Python** 3.10+ with `pip`
-- A **Supabase** project (for Google OAuth)
 
-### 1. Configure environment
-
-```bash
-cp .env.example .env
-```
-
-Fill in your Supabase credentials:
-
-```env
-VITE_SUPABASE_URL=https://your-supabase-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
-```
-
-### 2. Start the API Engine
+### 1. Start the API Engine
 
 ```bash
 pip install fastapi uvicorn ytmusicapi yt-dlp requests
@@ -130,7 +112,7 @@ npm run server
 
 The API engine runs at `http://localhost:8000`.
 
-### 3. Start the Web App
+### 2. Start the Web App
 
 ```bash
 npm install
@@ -139,7 +121,7 @@ npm run dev
 
 Open `http://localhost:5173` and explore the galaxy. 🌌
 
-### 4. Android App (optional)
+### 3. Android App (optional)
 
 Open the project root in **Android Studio** and run the `app` module on a device or emulator.
 
@@ -149,7 +131,6 @@ Open the project root in **Android Studio** and run the `app` module on a device
 
 - **Frontend:** React 18, TypeScript, Vite 6, Tailwind CSS 3, Zustand, Framer Motion, Lucide icons
 - **Backend:** FastAPI, Uvicorn, ytmusicapi, yt-dlp
-- **Auth:** Supabase (Google OAuth)
 - **Android:** Kotlin, Jetpack Compose, Material 3
 
 ---
